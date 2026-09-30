@@ -256,7 +256,7 @@ void start()
 
   // change motor PWM frequency for sampling time test
   // should not be above 100000 (100kHz), default is 80kHz.
-  motor.setPWMfrq(80000);
+  motor.setPWMfrq(1990);
 
   time_sec = 0;
 
