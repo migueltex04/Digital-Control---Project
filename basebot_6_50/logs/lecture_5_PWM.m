@@ -16,47 +16,34 @@ for k = 1:length(files)
 
     t = data(:,1);
 
-    % Voltage
-    voltage_left  = data(:,4);
-    voltage_right = data(:,5);
+    voltage_desired = data(:,3);
 
-    % Velocity
     velocity_left  = data(:,8);
     velocity_right = data(:,9);
 
-    % Current
     current_left  = data(:,10);
     current_right = data(:,11);
 
-    figure;
+    figure
 
-    % -------- Voltage --------
-    subplot(3,1,1)
-    plot(t, voltage_left, 'LineWidth', 1.2)
+    plot(t, voltage_desired/10, 'LineWidth', 1.2)
     hold on
-    plot(t, voltage_right, 'LineWidth', 1.2)
+    plot(t, velocity_left/1000, 'LineWidth', 1.2)
+    plot(t, velocity_right/1000, 'LineWidth', 1.2)
+    plot(t, current_left, 'LineWidth', 1.2)
+    plot(t, current_right, 'LineWidth', 1.2)
+
     grid on
-    ylabel('Voltage [V]')
-    legend('Left', 'Right')
+    xlabel('Time [s]')
+    ylabel('Scaled quantities')
     title(titles{k})
 
-    % -------- Velocity --------
-    subplot(3,1,2)
-    plot(t, velocity_left, 'LineWidth', 1.2)
-    hold on
-    plot(t, velocity_right, 'LineWidth', 1.2)
-    grid on
-    ylabel('Velocity [rad/s]')
-    legend('Left', 'Right')
-
-    % -------- Current --------
-    subplot(3,1,3)
-    plot(t, current_left, 'LineWidth', 1.2)
-    hold on
-    plot(t, current_right, 'LineWidth', 1.2)
-    grid on
-    ylabel('Current [A]')
-    xlabel('Time [s]')
-    legend('Left', 'Right')
+    legend( ...
+        'Desired voltage / 10', ...
+        'Left velocity [krad/s]', ...
+        'Right velocity [krad/s]', ...
+        'Left current [A]', ...
+        'Right current [A]' ...
+    )
 
 end

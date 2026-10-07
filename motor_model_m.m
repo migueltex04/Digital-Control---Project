@@ -225,6 +225,8 @@ figure;
 margin(L2);
 grid on;
 title('Open-Loop PI Controller Bode');
+
+diskmargin(L2)
 % 
 % isstable(feedback(L1,1))
 % isstable(feedback(L2,1))
