@@ -11,7 +11,8 @@ R  = 3.57;           % Ohm
 Kt = 0.008863;       % Nm/A
 Kb = Kt;
 D  = 8.57e-7;        % Nm/(rad/s)
-J  = 0.94e-6;        % kg*m^2
+J_mot  = 0.94e-6;        % kg*m^2
+J = J_mot + 8.683e-6;
 
 %% Robot geometry
 
@@ -19,15 +20,15 @@ gear = 9.6;
 wrad = 0.03;         % wheel radius [m]
 r2m = wrad/gear;
 
-B = 0.15;            % wheel base [m]
+B = 0.147;            % wheel base [m]
 
 %% Controller
 
-Kp = 0.008;
+Kp = 0.01;
 
 %% Sampling time
 
-Ts = 0.001;
+Ts = 0.008;
 
 %% Simulink model
 
