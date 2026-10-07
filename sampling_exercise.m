@@ -23,7 +23,7 @@ r2m = wrad/gear;     % motor rad/s -> robot m/s
 %% Controller
 
 % Kp = 0.05;
-Kp = 0.013;
+Kp = 0.008;
 
 %% Sampling time
 
@@ -71,7 +71,7 @@ grid on
 %% Test several sampling times
 
 % Ts_values = [0.001 0.004 0.005 0.006 0.010];
-Ts_values = [0.010 0.012 0.015 0.02 0.03 0.04 0.05 0.06];
+Ts_values = [0.03 0.035 0.038 0.04 0.042 0.045];
 
 for i = 1:length(Ts_values)
 
@@ -101,3 +101,5 @@ for i = 1:length(Ts_values)
     grid on
 
 end
+
+fprintf('Lowest Sampling frequency: %.01f [Hz]\n', 1/0.038);
