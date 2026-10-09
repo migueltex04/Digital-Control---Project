@@ -33,52 +33,52 @@ Tsim = 20; % s
 
 % Slalom Trajectory
 
-% t_ref = (0:0.01:20)';
-% 
-% velocity_ref = 0.4 + 0.15*sin(2*pi*t_ref/10);
-% turnrate_ref = 0.7*sin(2*pi*t_ref/8);
-% 
-% ramp = min(t_ref/1, 1);
-% 
-% velocity_ref = velocity_ref .* ramp;
-% turnrate_ref = turnrate_ref .* ramp;
-% 
-% v_input = [t_ref velocity_ref];
-% w_input = [t_ref turnrate_ref];
-
-% Infinite (8) Trajectory
-
 t_ref = (0:0.01:Tsim)';
 
-T_turn = 2;
-T = Tsim - T_turn;
-A = 1.5;
-B = 0.75;
-Omega = 2*pi/T;
+velocity_ref = 0.4 + 0.15*sin(2*pi*t_ref/10);
+turnrate_ref = 0.7*sin(2*pi*t_ref/8);
 
-velocity_ref = zeros(size(t_ref));
-turnrate_ref = zeros(size(t_ref));
+ramp = min(t_ref/1, 1);
 
-% Initial rotation of 45 degrees
-idx1 = t_ref <= T_turn;
-turnrate_ref(idx1) = (pi/4)/T_turn * ...
-    (1 - cos(2*pi*t_ref(idx1)/T_turn));
-
-% Figure-eight trajectory
-idx2 = t_ref > T_turn;
-tau = t_ref(idx2) - T_turn;
-
-dx = A*Omega*cos(Omega*tau);
-dy = 2*B*Omega*cos(2*Omega*tau);
-
-ddx = -A*Omega^2*sin(Omega*tau);
-ddy = -4*B*Omega^2*sin(2*Omega*tau);
-
-velocity_ref(idx2) = sqrt(dx.^2 + dy.^2);
-turnrate_ref(idx2) = (dx.*ddy - dy.*ddx)./(dx.^2 + dy.^2);
+velocity_ref = velocity_ref .* ramp;
+turnrate_ref = turnrate_ref .* ramp;
 
 v_input = [t_ref velocity_ref];
 w_input = [t_ref turnrate_ref];
+
+% Infinite (8) Trajectory
+
+% t_ref = (0:0.01:Tsim)';
+% 
+% T_turn = 2;
+% T = Tsim - T_turn;
+% A = 1.5;
+% B = 0.75;
+% Omega = 2*pi/T;
+% 
+% velocity_ref = zeros(size(t_ref));
+% turnrate_ref = zeros(size(t_ref));
+% 
+% % Initial rotation of 45 degrees
+% idx1 = t_ref <= T_turn;
+% turnrate_ref(idx1) = (pi/4)/T_turn * ...
+%     (1 - cos(2*pi*t_ref(idx1)/T_turn));
+% 
+% % Figure-eight trajectory
+% idx2 = t_ref > T_turn;
+% tau = t_ref(idx2) - T_turn;
+% 
+% dx = A*Omega*cos(Omega*tau);
+% dy = 2*B*Omega*cos(2*Omega*tau);
+% 
+% ddx = -A*Omega^2*sin(Omega*tau);
+% ddy = -4*B*Omega^2*sin(2*Omega*tau);
+% 
+% velocity_ref(idx2) = sqrt(dx.^2 + dy.^2);
+% turnrate_ref(idx2) = (dx.*ddy - dy.*ddx)./(dx.^2 + dy.^2);
+% 
+% v_input = [t_ref velocity_ref];
+% w_input = [t_ref turnrate_ref];
 
 
 %% Controller
