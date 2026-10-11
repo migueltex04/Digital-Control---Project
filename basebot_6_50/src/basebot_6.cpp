@@ -48,19 +48,43 @@ void printLog();
  */
 
 // Sample time can not go lower than 300us
-const uint32_t sampleTimeUs = 1000; // desired sample time in us - CHANGED
-// const float ts = sampleTimeUs * 1e-6; // sample time in seconds
+const uint32_t sampleTimeUs = 500; // desired sample time in us - CHANGED
+const float ts = sampleTimeUs * 1e-6; // sample time in seconds
 
 // Robot configuration
 const float gear = 9.6;
 const float wheelRadius = 0.0315; // (m)
-const float wheelBase = 0.14;
+const float wheelBase = 0.147; // (m)
+
+// Controller Gains
+const float Kp   = 0.04f;
+const float taui = 0.4f;
+const float Ki   = Kp / taui;
+const float voltageMax = 9.0f;
+
+struct Integrator
+{
+  float value;
+  float previousInput;
+};
+
+Integrator distanceIntegral = {0, 0};
+Integrator tripIntegral = {0, 0};
+Integrator headingIntegral = {0, 0};
+Integrator xIntegral = {0, 0};
+Integrator yIntegral = {0, 0};
+
+Integrator leftPI  = {0, 0};
+Integrator rightPI = {0, 0};
 
 // pose values
 float distA = 0; // trip distance
-float pose[4];
-float poseVel[2];
+float pose[4]     = {0, 0, 0, 0}; // x, y, heading, signed distance
+float poseVel[2]  = {0, 0}; // forward velocity, turn rate
+float wheelVel[2] = {0, 0}; // left and right wheel linear velocities
 bool velSaturated = false;
+bool firstPoseSample = true;
+bool piControlActive = false;
 
 
 // ////////////////////////////////////////
@@ -72,6 +96,7 @@ typedef struct
   int state;
   float desiredValue;
   float desiredHeading;
+  float desiredTurnrate;
   float motorVel[2];
   float motorVolt[2];
   int32_t encoder[2];
@@ -80,6 +105,7 @@ typedef struct
   float pose[4];
   float distA;
   float poseVel[2];
+  float wheelVel[2];
   float inVelLeft;
   float inVelRight;
 
@@ -99,7 +125,8 @@ typedef struct
 const int logsMax = 400000 / sizeof(LogData); // allocates 400kBytes
 LogData * logs = (LogData*)malloc(logsMax * sizeof(LogData));
 int logsCnt = 0; // next log entry to use / i.e. number of used log entries
-
+const int logEvery = 10; // use logEvery = 1 for the initial steps and spikes experiment
+int logSampleCounter = 0;
 
 
 void printLog()
@@ -129,6 +156,14 @@ void printLog()
   Serial.print(sizeof(LogData));
   Serial.println(" bytes");
 
+  if (piControlActive)
+    Serial.println("% Mode: wheel PI; column 3 is velocity reference (m/s)");
+  else
+    Serial.println("% Mode: direct voltage; column 3 is voltage reference (V)");
+
+  Serial.print("% Nominal log interval (s): ");
+  Serial.println(logEvery * Ts, 4);
+
 
  // Columns
 
@@ -148,6 +183,18 @@ void printLog()
   Serial.println("% 13 gyro[0]");
   Serial.println("% 14 gyro[1]");
   Serial.println("% 15 gyro[2]");
+
+  Serial.println("% 16 Turnrate reference (rad/s)");
+  Serial.println("% 17 Forward velocity (m/s)");
+  Serial.println("% 18 Turnrate (rad/s)");
+  Serial.println("% 19 x (m)");
+  Serial.println("% 20 y (m)");
+  Serial.println("% 21 Heading (rad)");
+  Serial.println("% 22 Signed distance (m)");
+  Serial.println("% 23 Total distance travelled (m)");
+  Serial.println("% 24-25 Wheel velocity (left,right) (m/s)");
+  Serial.println("% 26-27 Wheel velocity reference (left,right) (m/s)");
+  Serial.println("% Columns 16 and 26-27 are motion references for PI mode only");
 
 
   for (int i = 0; i < logsCnt; i++)
@@ -198,6 +245,35 @@ void printLog()
     Serial.print(" ");
     Serial.print(d->gyro[2],4);                         // 13
 
+    Serial.print(" ");
+    Serial.print(d->desiredTurnrate, 5);
+
+    for (int j = 0; j < 2; j++)
+    {
+      Serial.print(" ");
+      Serial.print(d->poseVel[j],5);
+    }
+
+    for (int j = 0; j < 4; j++)
+    {
+      Serial.print(" ");
+      Serial.print(d->pose[j],5);
+    }
+
+    Serial.print(" ");
+    Serial.print(d->distA,5);
+
+    for (int j = 0; j < 2; j++)
+    {
+      Serial.print(" ");
+      Serial.print(d->wheelVel[j],5);
+    }
+
+    Serial.print(" ");
+    Serial.print(d->inVelLeft,5);
+
+    Serial.print(" ");
+    Serial.print(d->inVelRight,5);
 
     Serial.println("");
 
@@ -243,9 +319,92 @@ void reset();
 int state = 0;               // actual sequence state
 float endTime = 0;           // for current state
 float desiredValue = 0;      // desired (reference) value send to controller
-float desiredHeading = 0;
+float desiredHeading = 0;    // rad
 
+float desiredTurnrate = 0; // rad/s
+float inVelLeft = 0;       // m/s
+float inVelRight = 0;      // m/s
 
+float integrate(Integrator &memory, float input, float dt)
+{
+  memory.value += 0.5f * dt * (input + memory.previousInput);
+  memory.previousInput = input;
+  return memory.value;
+}
+
+float wheelPI(Integrator &memory, float error)
+{
+  const float oldIntegral = memory.value;
+
+  integrate(memory, error, ts);
+
+  float voltage = Kp * error + Ki * memory.value;
+
+  // Check if this is really necessary (287 - 294). It is used to prevent anti-windup
+  const float integralChange = Ki * (memory.value - oldIntegral);
+
+  if ((voltage > voltageMax && integralChange > 0) || (voltage < -voltageMax && integralChange < 0))
+  {
+    memory.value = oldIntegral;
+    voltage = Kp * error + Ki * memory.value;
+  }
+
+return fmaxf(-voltageMax, fminf(voltageMax, voltage));
+
+}
+
+void updatePose()
+{
+  wheelVel[0] = -encoder.motorVelocity[0] * wheelRadius / gear;
+  wheelVel[0] =  encoder.motorVelocity[1] * wheelRadius / gear;
+
+  poseVel[0] = 0.5f * (wheelVel[0] + wheelVel[1]);
+  poseVel[1] = (wheelVel[1] - wheelVel[0]) / wheelBase;
+
+  if (firstPoseSample)
+  {
+    distanceIntegral.previousInput = poseVel[0];
+    tripIntegral.previousInput = fabsf(poseVel[0]);
+    headingIntegral.previousInput = poseVel[1];
+    xIntegral.previousInput = poseVel[0];
+    yIntegral.previousInput = 0;
+
+    firstPoseSample = false;
+    return;
+  }
+
+  pose [2] = integrate(headingIntegral, poseVel[1], ts);
+
+  pose[3] = integrate(distanceIntegral, poseVel[0], ts);
+  distA   = integrate(distanceIntegral, fabsf(poseVel[0]), ts);
+
+  pose[0] = integrate(xIntegral, poseVel[0] * cosf(pose[2]), ts);
+  pose[1] = integrate(yIntegral, poseVel[0] * sinf(pose[2]), ts);
+}
+
+void resetStates()
+{
+  distanceIntegral = {0, 0};
+  tripIntegral = {0, 0};
+  headingIntegral = {0, 0};
+  xIntegral = {0, 0};
+  yIntegral = {0, 0};
+
+  for (int i = 0; i < 4; i++)
+    pose[i] = 0;
+
+  for (int i = 0; i < 2; i++)
+  {
+    poseVel[i] = 0;
+    wheelVel[i] = 0;
+  }
+
+  distA = 0;
+  firstPoseSample = true;
+
+  leftPI  = {0, 0};
+  rightPI = {0, 0};
+}
 
 void start()
 {
@@ -253,10 +412,13 @@ void start()
 
   // reset log and encoders
   logsCnt = 0;
+  logSampleCounter = 0;
+
+  resetStates();
 
   // change motor PWM frequency for sampling time test
   // should not be above 100000 (100kHz), default is 80kHz.
-  motor.setPWMfrq(1990);
+  motor.setPWMfrq(80000);
 
   time_sec = 0;
 
@@ -266,6 +428,9 @@ void start()
   // Update of display takes too long for fast sampling
   // so, disable during sequence.
   display.useDisplay = false;
+
+  desiredTurnrate = 0;
+
 }
 
 
@@ -275,7 +440,7 @@ void stop(float after)
   // stop, but allow continued logging for a while
   state = 2;
   desiredValue = 0;
-
+  desiredTurnrate = 0;  
   // end log after an additional short time
   endTime = time_sec + after;
 }
@@ -545,13 +710,59 @@ void sequenceSpikes()
   }
 }
 
+void sequenceVelocityTest()
+{
+  switch (state)
+  {
+    case 0:
+      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
+      {
+        start();
+
+        desiredValue = 0;
+        desiredTurnrate = 0;
+
+        endTime = time_sec + 0.1f;
+        state = 10;
+      }
+      break;
+
+    case 10:
+      if (time_sec >= endTime)
+      {
+        desiredValue = 0.33f;
+        desiredTurnrate = 0;
+
+        endTime = time_sec + 3.0f;
+        state = 11;
+      }
+      break;
+
+    case 11:
+      if (time_sec >= endTime)
+      {
+        stop(0.5f);
+      }
+      break;
+
+    case 2:
+      if (time_sec >= endTime)
+      {
+        finished();
+      }
+      break;
+  }
+}
+
 
 /**
  * make the control
  */
 
-void controlUpdate()
+void controlUpdateVoltage() // For the straightforward sequencetwosteps of sequencespikes
 {
+  piControlActive = false;
+
   // do control during a mission only.
   // called at every tick
 
@@ -573,11 +784,39 @@ void controlUpdate()
   // values to the motor.
 }
 
+void controlUpdatePI() // For fancy trajectory missions
+{
+  piControlActive = true;
+
+  inVelLeft  = desiredValue - 0.5f * wheelBase * desiredTurnrate;
+  inVelRight = desiredValue + 0.5f * wheelBase * desiredTurnrate;
+
+  const float omegaRefLeft  = inVelLeft  * gear / wheelRadius;
+  const float omegaRefRight = inVelRight * gear / wheelRadius;
+
+  const float omegaLeft  = -encoder.motorVelocity[0];
+  const float omegaRight =  encoder.motorVelocity[1];
+
+  const float errorLeft  = omegaRefLeft  - omegaLeft;
+  const float errorRight = omegaRefRight - omegaRight;
+
+  const float voltageLeft  = wheelPI(leftPI,  errorLeft);
+  const float voltageRight = wheelPI(rightPI, errorRight);
+
+  motor.motorVoltage[0] = -voltageLeft;
+  motor.motorVoltage[1] =  voltageRight;
+}
 
 
 void updateLog()
 {
   // step response mode
+
+  if (state <= 0)
+    return;
+
+  if (logSampleCounter++ % logEvery != 0)
+    return;
 
   if (state > 0 and logsCnt < logsMax)
   {
@@ -629,6 +868,21 @@ void updateLog()
 
 
     // add more items as needed, NB! also the struct definition at top.
+
+    logs[logsCnt].desiredTurnrate = desiredTurnrate;
+
+    for (int i = 0; i < 4; i++)
+    {
+      logs[logsCnt].pose[i] = pose[i];
+    }
+
+    logs[logsCnt].distA = distA;
+
+    logs[logsCnt].wheelVel[0] = wheelVel[0];
+    logs[logsCnt].wheelVel[1] = wheelVel[1];
+
+    logs[logsCnt].inVelLeft = inVelLeft;
+    logs[logsCnt].inVelRight = inVelRight;
 
     logsCnt++;
   }
@@ -686,20 +940,20 @@ void loop(void)
 
       // read sensors
       imu2.tick();
-    
-
       encoder.tick();
 
-      // updatePose();
-
-      sequenceTwoSteps();
+      // Select one sequence:
+      // sequenceTwoSteps();        // Original voltage steps
+      sequenceVelocityTest();    // Velocity reference test
 
       if (state > 0)
       {
         // Only if started
+        updatePose();
 
-        // Calculate new motor voltage
-        controlUpdate();
+        // Select the matching control:
+        // controlUpdateVoltage(); // Direct voltage
+        controlUpdatePI();      // Wheel PI control
       }
 
       // give value to actuators
