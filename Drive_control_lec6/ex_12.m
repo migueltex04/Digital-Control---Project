@@ -17,34 +17,39 @@ J = J_mot + 8.683e-6;
 %% Robot geometry
 
 gear = 9.6;
-wrad = 0.03;         % wheel radius [m]
+wrad = 0.0315;         % wheel radius [m]
 r2m = wrad/gear;
 
 B = 0.147;            % wheel base [m]
 
 %% Reference
 
-Tsim = 20; % s
+Tsim = 3.6; % s
 
 % Fixed Single Step
 
-% velocity_ref = 0.6; % m/s
-% turnrate_ref = 1.0; % rad/s
+velocity_ref = 0.3; % m/s
+turnrate_ref = 0.0; % rad/s
+
+t_ref = [0; 0.1; 3.1; Tsim];
+
+v_input = [t_ref, [0; velocity_ref; 0; 0]];
+w_input = [t_ref, [0; turnrate_ref; 0; 0]];
 
 % Slalom Trajectory
 
-t_ref = (0:0.01:Tsim)';
-
-velocity_ref = 0.4 + 0.15*sin(2*pi*t_ref/10);
-turnrate_ref = 0.7*sin(2*pi*t_ref/8);
-
-ramp = min(t_ref/1, 1);
-
-velocity_ref = velocity_ref .* ramp;
-turnrate_ref = turnrate_ref .* ramp;
-
-v_input = [t_ref velocity_ref];
-w_input = [t_ref turnrate_ref];
+% t_ref = (0:0.01:Tsim)';
+% 
+% velocity_ref = 0.4 + 0.15*sin(2*pi*t_ref/10);
+% turnrate_ref = 0.7*sin(2*pi*t_ref/8);
+% 
+% ramp = min(t_ref/1, 1);
+% 
+% velocity_ref = velocity_ref .* ramp;
+% turnrate_ref = turnrate_ref .* ramp;
+% 
+% v_input = [t_ref velocity_ref];
+% w_input = [t_ref turnrate_ref];
 
 % Infinite (8) Trajectory
 
@@ -83,7 +88,14 @@ w_input = [t_ref turnrate_ref];
 
 %% Controller
 
-Kp = 0.04;
+% Adequate for the model
+% Kp = 0.04;
+% tau_I = 0.4;
+% Ki = Kp/tau_I;
+
+% Adequate for reality (it was too slow) (maybe the higher gain is useful to counter the static drag
+% on the floor because with Leonora upside down it behaves differently, the Kp = 0.04 was enough)
+Kp = 0.08;
 tau_I = 0.4;
 Ki = Kp/tau_I;
 

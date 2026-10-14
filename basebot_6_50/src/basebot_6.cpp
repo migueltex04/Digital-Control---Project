@@ -53,11 +53,13 @@ const float ts = sampleTimeUs * 1e-6; // sample time in seconds
 
 // Robot configuration
 const float gear = 9.6;
-const float wheelRadius = 0.0315; // (m)
+// const float wheelRadius = 0.0315; // (m)
+const float wheelRadius = 0.03380; // calibrated effective radius (m) - needed to
+                                   // accomplish the physical desired distance
 const float wheelBase = 0.147; // (m)
 
 // Controller Gains
-const float Kp   = 0.04f;
+const float Kp   = 0.08f;
 const float taui = 0.4f;
 const float Ki   = Kp / taui;
 const float voltageMax = 9.0f;
@@ -162,7 +164,7 @@ void printLog()
     Serial.println("% Mode: direct voltage; column 3 is voltage reference (V)");
 
   Serial.print("% Nominal log interval (s): ");
-  Serial.println(logEvery * Ts, 4);
+  Serial.println(logEvery * ts, 4);
 
 
  // Columns
@@ -356,7 +358,7 @@ return fmaxf(-voltageMax, fminf(voltageMax, voltage));
 void updatePose()
 {
   wheelVel[0] = -encoder.motorVelocity[0] * wheelRadius / gear;
-  wheelVel[0] =  encoder.motorVelocity[1] * wheelRadius / gear;
+  wheelVel[1] =  encoder.motorVelocity[1] * wheelRadius / gear;
 
   poseVel[0] = 0.5f * (wheelVel[0] + wheelVel[1]);
   poseVel[1] = (wheelVel[1] - wheelVel[0]) / wheelBase;
@@ -376,7 +378,7 @@ void updatePose()
   pose [2] = integrate(headingIntegral, poseVel[1], ts);
 
   pose[3] = integrate(distanceIntegral, poseVel[0], ts);
-  distA   = integrate(distanceIntegral, fabsf(poseVel[0]), ts);
+  distA   = integrate(tripIntegral, fabsf(poseVel[0]), ts);
 
   pose[0] = integrate(xIntegral, poseVel[0] * cosf(pose[2]), ts);
   pose[1] = integrate(yIntegral, poseVel[0] * sinf(pose[2]), ts);
@@ -463,6 +465,9 @@ void finished()
 
   // wait for next button press
   state = 0;
+
+  Serial.print("% Finished. Saved samples: ");
+  Serial.println(logsCnt);
 
   printLog();
 }
@@ -730,7 +735,7 @@ void sequenceVelocityTest()
     case 10:
       if (time_sec >= endTime)
       {
-        desiredValue = 0.33f;
+        desiredValue = 0.30f;
         desiredTurnrate = 0;
 
         endTime = time_sec + 3.0f;
@@ -759,7 +764,7 @@ void sequenceVelocityTest()
  * make the control
  */
 
-void controlUpdateVoltage() // For the straightforward sequencetwosteps of sequencespikes
+void controlUpdateVoltage() // For the straightforward sequencetwosteps or sequencespikes
 {
   piControlActive = false;
 
