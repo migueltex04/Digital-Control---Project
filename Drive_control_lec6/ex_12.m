@@ -17,7 +17,7 @@ J = J_mot + 8.683e-6;
 %% Robot geometry
 
 gear = 9.6;
-wrad = 0.0315;         % wheel radius [m]
+wrad = 0.0315*1.073;         % wheel radius [m]
 r2m = wrad/gear;
 
 B = 0.147;            % wheel base [m]
