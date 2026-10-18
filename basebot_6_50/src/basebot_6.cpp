@@ -55,7 +55,7 @@ const float ts = sampleTimeUs * 1e-6; // sample time in seconds
 const float gear = 9.6;
 // const float wheelRadius = 0.0315; // (m)
 const float wheelRadius = 0.03380; // calibrated effective radius (m) - needed to
-                                   // accomplish the physical desired distance
+                                   // accomplish the physical desired distance - MIGHT NEED A RECHECK
 const float wheelBase = 0.147; // (m)
 
 // Controller Gains

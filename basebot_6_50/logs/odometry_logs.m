@@ -1,7 +1,7 @@
 close all;
 
 % On the floor
-data = readmatrix('device-monitor-261014-180459.log', ...
+data = readmatrix('device-monitor-261018-215334.log', ...
     'FileType', 'text', 'CommentStyle', '%');
 
 % Uside down
@@ -29,6 +29,7 @@ xlabel('x [m]')
 ylabel('y [m]')
 title('Robot trajectory')
 legend('Trajectory','Start','End','Location','best')
+xlim([0 1.0]);
 
 figure;
 
@@ -55,4 +56,4 @@ plot(t,distance,'LineWidth',1.2)
 grid on
 xlabel('Time [s]')
 ylabel('Distance [m]')
-title('Signed distance travelled')
+title('Distance travelled')
