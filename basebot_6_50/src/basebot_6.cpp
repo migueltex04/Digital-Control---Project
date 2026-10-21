@@ -64,6 +64,13 @@ const float taui = 0.4f;
 const float Ki   = Kp / taui;
 const float voltageMax = 9.0f;
 
+// Turn-rate PI gains
+const float KpTurn = 5.0f;      // To be tuned
+const float tauiTurn = 0.2f;   // To be tuned
+const float KiTurn = KpTurn / tauiTurn;
+
+const float turnrateMax = 4.0f; // rad/s - To be checked
+
 struct Integrator
 {
   float value;
@@ -78,6 +85,8 @@ Integrator yIntegral = {0, 0};
 
 Integrator leftPI  = {0, 0};
 Integrator rightPI = {0, 0};
+
+Integrator turnratePI = {0, 0};
 
 // pose values
 float distA = 0; // trip distance
@@ -342,7 +351,7 @@ float wheelPI(Integrator &memory, float error)
 
   float voltage = Kp * error + Ki * memory.value;
 
-  // Check if this is really necessary (287 - 294). It is used to prevent anti-windup
+  // Check if this is really necessary. It is used to prevent anti-windup
   const float integralChange = Ki * (memory.value - oldIntegral);
 
   if ((voltage > voltageMax && integralChange > 0) || (voltage < -voltageMax && integralChange < 0))
@@ -351,7 +360,28 @@ float wheelPI(Integrator &memory, float error)
     voltage = Kp * error + Ki * memory.value;
   }
 
-return fmaxf(-voltageMax, fminf(voltageMax, voltage));
+  return fmaxf(-voltageMax, fminf(voltageMax, voltage));
+
+}
+
+float turnrateControl(float error) // Because it only has one Integrator variable to control - Integrator turnratePI
+{
+  const float oldIntegral = turnratePI.value;
+
+  integrate(turnratePI, error, ts);
+
+  float turnrateCommand = KpTurn * error + KiTurn * turnratePI.value;
+
+  // Check if this is really necessary. It is used to prevent anti-windup
+  const float integralChange = Ki * (turnratePI.value - oldIntegral);
+
+  if ((turnrateCommand > turnrateMax && integralChange > 0) || (turnrateCommand < -turnrateMax && integralChange < 0))
+  {
+    turnratePI.value = oldIntegral;
+    turnrateCommand = KpTurn * error + KiTurn * turnratePI.value;
+  }
+
+  return fmaxf(-turnrateMax, fminf(turnrateMax, turnrateCommand));
 
 }
 
@@ -406,6 +436,8 @@ void resetStates()
 
   leftPI  = {0, 0};
   rightPI = {0, 0};
+
+  turnratePI = {0, 0};
 }
 
 void start()
@@ -759,6 +791,110 @@ void sequenceVelocityTest()
   }
 }
 
+void sequenceTurnrateTest()
+{
+  switch (state)
+  {
+    case 0:
+      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
+      {
+        start();
+
+        desiredValue = 0.0f;
+        desiredTurnrate = 0.0f;
+
+        endTime = 0.5f;
+        state = 10;
+      }
+      break;
+
+    case 10:
+      if (time_sec >= endTime)
+      {
+        desiredValue = 0.3f;
+        desiredTurnrate = 0.0f;
+
+        endTime = 2.0f;
+        state = 11;
+      }
+      break;
+
+    case 11:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = 0.5f;
+
+        endTime = 4.0f;
+        state = 12;
+      }
+      break;
+
+    case 12:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = 0.0f;
+
+        endTime = 5.0f;
+        state = 13;
+      }
+      break;
+
+    case 13:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = -0.5f;
+
+        endTime = 7.0f;
+        state = 14;
+      }
+      break;
+
+    case 14:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = 0.0f;
+
+        endTime = 8.0f;
+        state = 15;
+      }
+      break;
+
+    case 15:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = 1.0f;
+
+        endTime = 10.0f;
+        state = 16;
+      }
+      break;
+
+    case 16:
+      if (time_sec >= endTime)
+      {
+        desiredTurnrate = 0.0f;
+
+        endTime = 11.0f;
+        state = 17;
+      }
+      break;
+
+    case 17:
+      if (time_sec >= endTime)
+      {
+        stop(1.0f);
+      }
+      break;
+
+    case 2:
+      if (time_sec >= endTime)
+      {
+        finished();
+      }
+      break;
+  }
+}
+
 
 /**
  * make the control
@@ -793,8 +929,13 @@ void controlUpdatePI() // For fancy trajectory missions
 {
   piControlActive = true;
 
-  inVelLeft  = desiredValue - 0.5f * wheelBase * desiredTurnrate;
-  inVelRight = desiredValue + 0.5f * wheelBase * desiredTurnrate;
+  const float measuredTurnrate = poseVel[1];
+  const float turnrateError = desiredTurnrate - measuredTurnrate;
+
+  const float turnrateCommand = turnrateControl(turnrateError);
+
+  inVelLeft  = desiredValue - 0.5f * wheelBase * turnrateCommand;
+  inVelRight = desiredValue + 0.5f * wheelBase * turnrateCommand;
 
   const float omegaRefLeft  = inVelLeft  * gear / wheelRadius;
   const float omegaRefRight = inVelRight * gear / wheelRadius;
@@ -949,7 +1090,9 @@ void loop(void)
 
       // Select one sequence:
       // sequenceTwoSteps();        // Original voltage steps
-      sequenceVelocityTest();    // Velocity reference test
+      // sequenceVelocityTest();    // Velocity reference test
+      sequenceTurnrateTest();    // Turnrate reference test
+
 
       if (state > 0)
       {

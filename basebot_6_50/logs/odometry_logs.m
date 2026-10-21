@@ -1,7 +1,7 @@
-close all;
+% close all;
 
 % On the floor
-data = readmatrix('device-monitor-261018-215334.log', ...
+data = readmatrix('device-monitor-261021-120257.log', ...
     'FileType', 'text', 'CommentStyle', '%');
 
 % Uside down

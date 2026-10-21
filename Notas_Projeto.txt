@@ -1,0 +1,3 @@
+Importância de ter implementado sempre em qualquer missão uma fase de desaceleração das rodas. impede que o robot quase caia para a frente coma inércia e poupa tempo.
+
+Anti wind-up

@@ -11,7 +11,7 @@ R  = 3.57;           % Ohm
 Kt = 0.008863;       % Nm/A
 Kb = Kt;
 D  = 8.57e-7;        % Nm/(rad/s)
-J_mot  = 0.94e-6;        % kg*m^2
+J_mot  = 0.94e-6;    % kg*m^2
 J = J_mot + 8.683e-6;
 
 %% Robot geometry
@@ -24,17 +24,23 @@ B = 0.147;            % wheel base [m]
 
 %% Reference
 
-Tsim = 3.6; % s
+Tsim = 12; % s
 
-% Fixed Single Step
+% Steps
 
-velocity_ref = 0.3; % m/s
-turnrate_ref = 0.0; % rad/s
+t_ref = (0:0.01:Tsim)';
 
-t_ref = [0; 0.1; 3.1; Tsim];
+velocity_ref = zeros(size(t_ref));
+turnrate_ref = zeros(size(t_ref));
 
-v_input = [t_ref, [0; velocity_ref; 0; 0]];
-w_input = [t_ref, [0; turnrate_ref; 0; 0]];
+velocity_ref(t_ref >= 0.5 & t_ref < 11) = 0.3;
+
+turnrate_ref(t_ref >= 2   & t_ref < 4)  =  0.5;
+turnrate_ref(t_ref >= 5   & t_ref < 7)  = -0.5;
+turnrate_ref(t_ref >= 8   & t_ref < 10) =  1.0;
+
+v_input = [t_ref velocity_ref];
+w_input = [t_ref turnrate_ref];
 
 % Slalom Trajectory
 
@@ -86,7 +92,9 @@ w_input = [t_ref, [0; turnrate_ref; 0; 0]];
 % w_input = [t_ref turnrate_ref];
 
 
-%% Controller
+%% Wheel Speed Controller
+
+
 
 % Adequate for the model
 % Kp = 0.04;
@@ -98,6 +106,13 @@ w_input = [t_ref, [0; turnrate_ref; 0; 0]];
 Kp = 0.08;
 tau_I = 0.4;
 Ki = Kp/tau_I;
+
+
+%% Turn Rate Controller
+
+Kp_tr = 5;
+tau_I_tr = 0.2;
+Ki_tr = Kp_tr / tau_I_tr;
 
 %% Sampling time
 
