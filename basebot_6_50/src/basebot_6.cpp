@@ -65,8 +65,8 @@ const float Ki   = Kp / taui;
 const float voltageMax = 9.0f;
 
 // Turn-rate PI gains
-const float KpTurn = 5.0f;      // To be tuned
-const float tauiTurn = 0.2f;   // To be tuned
+const float KpTurn = 0.0443322593f;      // To be tuned
+const float tauiTurn = 0.00778527218f;   // To be tuned
 const float KiTurn = KpTurn / tauiTurn;
 
 const float turnrateMax = 4.0f; // rad/s - To be checked
@@ -136,6 +136,7 @@ typedef struct
 const int logsMax = 400000 / sizeof(LogData); // allocates 400kBytes
 LogData * logs = (LogData*)malloc(logsMax * sizeof(LogData));
 int logsCnt = 0; // next log entry to use / i.e. number of used log entries
+bool usbMonitorPreviouslyConnected = false;
 const int logEvery = 10; // use logEvery = 1 for the initial steps and spikes experiment
 int logSampleCounter = 0;
 
@@ -373,7 +374,7 @@ float turnrateControl(float error) // Because it only has one Integrator variabl
   float turnrateCommand = KpTurn * error + KiTurn * turnratePI.value;
 
   // Check if this is really necessary. It is used to prevent anti-windup
-  const float integralChange = Ki * (turnratePI.value - oldIntegral);
+  const float integralChange = KiTurn * (turnratePI.value - oldIntegral);
 
   if ((turnrateCommand > turnrateMax && integralChange > 0) || (turnrateCommand < -turnrateMax && integralChange < 0))
   {
@@ -498,10 +499,12 @@ void finished()
   // wait for next button press
   state = 0;
 
-  Serial.print("% Finished. Saved samples: ");
-  Serial.println(logsCnt);
-
-  printLog();
+  if (Serial)
+  {
+    Serial.print("% Finished. Saved samples: ");
+    Serial.println(logsCnt);
+    printLog();
+  }
 }
 
 
@@ -832,57 +835,7 @@ void sequenceTurnrateTest()
     case 12:
       if (time_sec >= endTime)
       {
-        desiredTurnrate = 0.0f;
-
-        endTime = 5.0f;
-        state = 13;
-      }
-      break;
-
-    case 13:
-      if (time_sec >= endTime)
-      {
-        desiredTurnrate = -0.5f;
-
-        endTime = 7.0f;
-        state = 14;
-      }
-      break;
-
-    case 14:
-      if (time_sec >= endTime)
-      {
-        desiredTurnrate = 0.0f;
-
-        endTime = 8.0f;
-        state = 15;
-      }
-      break;
-
-    case 15:
-      if (time_sec >= endTime)
-      {
-        desiredTurnrate = 1.0f;
-
-        endTime = 10.0f;
-        state = 16;
-      }
-      break;
-
-    case 16:
-      if (time_sec >= endTime)
-      {
-        desiredTurnrate = 0.0f;
-
-        endTime = 11.0f;
-        state = 17;
-      }
-      break;
-
-    case 17:
-      if (time_sec >= endTime)
-      {
-        stop(1.0f);
+        stop(0.5f);
       }
       break;
 
@@ -1115,6 +1068,35 @@ void loop(void)
 
       display.tick(); // update O-LED display
     }
+
+    const bool usbMonitorConnected = (bool)Serial;
+    if (state == 0 && usbMonitorConnected)
+    {
+      if (!usbMonitorPreviouslyConnected && logsCnt > 0)
+      {
+        Serial.print("% Reconnected. Saved samples: ");
+        Serial.println(logsCnt);
+        printLog();
+      }
+
+      if (Serial.available() > 0)
+      {
+        const int incoming = Serial.peek();
+        if (incoming == 'L' || incoming == 'l')
+        {
+          Serial.read();
+          if (logsCnt > 0)
+          {
+            Serial.print("% Requested saved samples: ");
+            Serial.println(logsCnt);
+            printLog();
+          }
+          else
+            Serial.println("% No RAM logs. Start a test with the button first.");
+        }
+      }
+    }
+    usbMonitorPreviouslyConnected = usbMonitorConnected;
 
     usb.tick(); // listen to incoming from USB
   }
