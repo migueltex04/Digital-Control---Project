@@ -22,25 +22,44 @@ r2m = wrad/gear;
 
 B = 0.147;            % wheel base [m]
 
-%% Reference
+%% Sampling time
 
-Tsim = 12; % s
+Ts = 0.008;
+
+Tsim = 14;
 
 % Steps
 
 t_ref = (0:0.01:Tsim)';
 
 velocity_ref = zeros(size(t_ref));
-turnrate_ref = zeros(size(t_ref));
+heading_ref = zeros(size(t_ref));
 
-velocity_ref(t_ref >= 0.5 & t_ref < 11) = 0.3;
+v = 0.75;
+T_forward = 1;
+T_turn = 1;
+t_start = 0.5;
 
-turnrate_ref(t_ref >= 2   & t_ref < 4)  =  0.5;
-turnrate_ref(t_ref >= 5   & t_ref < 7)  = -0.5;
-turnrate_ref(t_ref >= 8   & t_ref < 10) =  1.0;
+t_end = t_start + 4*(T_forward + T_turn) + T_forward;
+
+velocity_ref(t_ref >= t_start & t_ref < t_end) = v;
+
+for k = 1:4
+
+    t1 = t_start + (k-1)*(T_forward + T_turn) + T_forward;
+    t2 = t1 + T_turn;
+
+    idx = t_ref >= t1 & t_ref < t2;
+    tau = (t_ref(idx)-t1)/T_turn;
+
+    heading_ref(idx) = (k-1)*pi/2 + (pi/4)*(1-cos(pi*tau));
+
+    heading_ref(t_ref >= t2) = k*pi/2;
+
+end
 
 v_input = [t_ref velocity_ref];
-w_input = [t_ref turnrate_ref];
+w_input = [t_ref heading_ref];
 
 % Slalom Trajectory
 
@@ -114,13 +133,91 @@ Kp_tr = 5;
 tau_I_tr = 0.2;
 Ki_tr = Kp_tr / tau_I_tr;
 
-%% Sampling time
+%% Heading Controller
 
-Ts = 0.008;
+Kph = 1;
+
+num_ctrl = 1;
+den_ctrl = 1;
+
+model = 'motor_model_23b_lec8';
+load_system(model);
+open_system(model);
+
+ios(1) = linio([model '/TurnRate_Controller/Uh'],1,'openinput');
+ios(2) = linio([model '/Robot model'],3,'output');
+
+setlinio(model,ios);
+
+op = 1.0;
+sys = linearize(model,ios,op);
+[num, den] = ss2tf(sys.A, sys.B, sys.C, sys.D);
+Gheading = minreal(tf(num, den));
+
+disp(Gheading)
+pole(Gheading)
+zero(Gheading)
+
+figure
+margin(Gheading)
+grid on
+
+%% Heading lead compensator
+
+PM_desired = 90;
+PM_safety = 0;
+wc = 3; % Desired crossover frequency [rad/s]
+
+Gjw = squeeze(freqresp(Gheading,wc));
+
+mag = abs(Gjw);
+phase = rad2deg(angle(Gjw));
+
+phi = PM_desired - 180 - phase + PM_safety;
+
+if phi <= 0 || phi >= 90
+    error('Chosen crossover requires an unsuitable phase lead. Change wc or verify Gheading.')
+end
+
+alpha = (1-sind(phi))/(1+sind(phi));
+
+Tlead = 1/(wc*sqrt(alpha));
+
+num_ctrl = [Tlead 1];
+den_ctrl = [alpha*Tlead 1];
+
+Clead = tf(num_ctrl,den_ctrl);
+
+Kph = 1/(mag*abs(squeeze(freqresp(Clead,wc))));
+
+Lheading = Kph*Clead*Gheading;
+
+figure
+margin(Lheading)
+grid on
+
+Tclosed = feedback(Lheading,1);
+
+disp('Closed-loop bandwidth:')
+disp(bandwidth(Tclosed))
+
+
+disp('Closed-loop stable:')
+disp(isstable(Tclosed))
+
+figure
+step(Tclosed)
+grid on
+
+[GM,PM,Wcg,Wcp] = margin(Lheading);
+
+fprintf('Phase margin = %.2f deg\n',PM);
+fprintf('Gain crossover = %.2f rad/s\n',Wcp);
+fprintf('Gain margin = %.2f dB\n',20*log10(GM));
+
+Kph = 10;
 
 %% Simulink model
-
-model = 'motor_model_23b_lec6';
 
 out = sim(model,Tsim);
 
@@ -131,7 +228,7 @@ data = out.robot.Data;
 
 % Order of signals in the Mux, as in the lecture slide:
 vRef        = data(:,1);
-turnrateRef = data(:,2);
+headingRef = data(:,2);
 distance    = data(:,3);
 velocity    = data(:,4);
 heading     = data(:,5);
@@ -141,7 +238,7 @@ figure
 
 plot(t,vRef,'LineWidth',1.5)
 hold on
-plot(t,turnrateRef,'LineWidth',1.5)
+plot(t,headingRef,'LineWidth',1.5)
 plot(t,distance,'LineWidth',1.5)
 plot(t,velocity,'LineWidth',1.5)
 plot(t,heading,'LineWidth',1.5)
@@ -152,7 +249,7 @@ xlabel('Time (s)')
 ylabel('Value')
 
 legend('Velocity Step (m/s)', ...   
-       'Turnrate Step (rad/s)', ...
+       'Heading Step (rad/s)', ...
        'Robot model distance (m)', ...
        'Robot model vel (m/s)', ...
        'Robot model heading (rad)', ...
