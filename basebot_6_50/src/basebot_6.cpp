@@ -59,8 +59,8 @@ const float wheelRadius = 0.03380; // calibrated effective radius (m) - needed t
 const float wheelBase = 0.147; // (m)
 
 // Controller Gains
-const float Kp   = 0.08f;
-const float taui = 0.4f;
+const float Kp   = 0.04f;
+const float taui = 0.16f;
 const float Ki   = Kp / taui;
 const float voltageMax = 9.0f;
 
@@ -70,6 +70,14 @@ const float tauiTurn = 0.00778527218f;   // To be tuned
 const float KiTurn = KpTurn / tauiTurn;
 
 const float turnrateMax = 4.0f; // rad/s - To be checked
+
+// Heading phase-lead controller
+const float KphHeading = 3.4f;
+const float TleadHeading = 0.2052f;
+const float alphaHeading = 0.9421f;
+
+const bool useTurnrateCascade = false;
+
 
 struct Integrator
 {
@@ -87,6 +95,14 @@ Integrator leftPI  = {0, 0};
 Integrator rightPI = {0, 0};
 
 Integrator turnratePI = {0, 0};
+
+struct HeadingLeadState
+{
+  float previousError;
+  float previousOutput;
+};
+
+HeadingLeadState headingLead = {0, 0};
 
 // pose values
 float distA = 0; // trip distance
@@ -206,6 +222,7 @@ void printLog()
   Serial.println("% 23 Total distance travelled (m)");
   Serial.println("% 24-25 Wheel velocity (left,right) (m/s)");
   Serial.println("% 26-27 Wheel velocity reference (left,right) (m/s)");
+  Serial.println("% 28 Heading reference (rad)");
   Serial.println("% Columns 16 and 26-27 are motion references for PI mode only");
 
 
@@ -286,6 +303,9 @@ void printLog()
 
     Serial.print(" ");
     Serial.print(d->inVelRight,5);
+
+    Serial.print(" ");
+    Serial.print(d->desiredHeading,5);
 
     Serial.println("");
 
@@ -386,6 +406,27 @@ float turnrateControl(float error) // Because it only has one Integrator variabl
 
 }
 
+float headingControl(float error)
+{
+  const float d = 2.0f * alphaHeading * TleadHeading + ts;
+
+  const float b0 = (2.0f * TleadHeading + ts) / d;
+  const float b1 = (ts - 2.0f * TleadHeading) / d;
+  const float a1 = (ts - 2.0f * alphaHeading * TleadHeading) / d;
+
+  const float leadOutput =
+      b0 * error
+    + b1 * headingLead.previousError
+    - a1 * headingLead.previousOutput;
+
+  headingLead.previousError = error;
+  headingLead.previousOutput = leadOutput;
+
+  const float turnrateCommand = KphHeading * leadOutput;
+
+  return fmaxf(-turnrateMax, fminf(turnrateMax, turnrateCommand));
+}
+
 void updatePose()
 {
   wheelVel[0] = -encoder.motorVelocity[0] * wheelRadius / gear;
@@ -439,6 +480,8 @@ void resetStates()
   rightPI = {0, 0};
 
   turnratePI = {0, 0};
+
+  headingLead = {0, 0};
 }
 
 void start()
@@ -466,6 +509,8 @@ void start()
 
   desiredTurnrate = 0;
 
+  desiredHeading = 0;
+
 }
 
 
@@ -476,6 +521,7 @@ void stop(float after)
   state = 2;
   desiredValue = 0;
   desiredTurnrate = 0;  
+  desiredHeading = pose[2];
   // end log after an additional short time
   endTime = time_sec + after;
 }
@@ -848,6 +894,88 @@ void sequenceTurnrateTest()
   }
 }
 
+void sequenceHeadingTest()
+{
+  switch (state)
+  {
+    case 0:
+      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
+      {
+        start();
+
+        desiredValue = 0.0f;
+        desiredHeading = 0.0f;
+
+        endTime = 0.5f;
+        state = 10;
+      }
+      break;
+
+    case 10:
+      if (time_sec >= endTime)
+      {
+        desiredValue = 0.75f;
+
+        endTime = 1.5f;
+        state = 11;
+      }
+      break;
+
+    case 11:
+      if (time_sec >= endTime)
+      {
+        desiredHeading = PI / 2.0f;
+
+        endTime = 2.5f;
+        state = 12;
+      }
+      break;
+
+    case 12:
+      if (time_sec >= endTime)
+      {
+        desiredHeading = PI;
+
+        endTime = 3.5f;
+        state = 13;
+      }
+      break;
+
+    case 13:
+      if (time_sec >= endTime)
+      {
+        desiredHeading = 3.0f * PI / 2.0f;
+
+        endTime = 4.5f;
+        state = 14;
+      }
+      break;
+
+    case 14:
+      if (time_sec >= endTime)
+      {
+        desiredHeading = 2.0f * PI;
+
+        endTime = 5.5f;
+        state = 15;
+      }
+      break;
+
+    case 15:
+      if (time_sec >= endTime)
+      {
+        stop(0.5f);
+      }
+      break;
+
+    case 2:
+      if (time_sec >= endTime)
+      {
+        finished();
+      }
+      break;
+  }
+}
 
 /**
  * make the control
@@ -878,32 +1006,52 @@ void controlUpdateVoltage() // For the straightforward sequencetwosteps or seque
   // values to the motor.
 }
 
-void controlUpdatePI() // For fancy trajectory missions
+void controlUpdatePI()
 {
   piControlActive = true;
 
-  const float measuredTurnrate = poseVel[1];
-  const float turnrateError = desiredTurnrate - measuredTurnrate;
+  if (state == 2)
+  {
+    inVelLeft = 0;
+    inVelRight = 0;
+    motor.motorVoltage[0] = 0;
+    motor.motorVoltage[1] = 0;
+    return;
+  }
 
-  const float turnrateCommand = turnrateControl(turnrateError);
+  const float headingError = desiredHeading - pose[2];
+
+  const float headingTurnrateRef = headingControl(headingError);
+
+  float turnrateCommand = headingTurnrateRef;
+
+  if (useTurnrateCascade)
+  {
+    const float measuredTurnrate = poseVel[1];
+    const float turnrateError = headingTurnrateRef - measuredTurnrate;
+
+    turnrateCommand = turnrateControl(turnrateError);
+  }
+
+  desiredTurnrate = headingTurnrateRef;
 
   inVelLeft  = desiredValue - 0.5f * wheelBase * turnrateCommand;
   inVelRight = desiredValue + 0.5f * wheelBase * turnrateCommand;
 
-  const float omegaRefLeft  = inVelLeft  * gear / wheelRadius;
+  const float omegaRefLeft  = inVelLeft * gear / wheelRadius;
   const float omegaRefRight = inVelRight * gear / wheelRadius;
 
   const float omegaLeft  = -encoder.motorVelocity[0];
-  const float omegaRight =  encoder.motorVelocity[1];
+  const float omegaRight = encoder.motorVelocity[1];
 
-  const float errorLeft  = omegaRefLeft  - omegaLeft;
+  const float errorLeft  = omegaRefLeft - omegaLeft;
   const float errorRight = omegaRefRight - omegaRight;
 
-  const float voltageLeft  = wheelPI(leftPI,  errorLeft);
+  const float voltageLeft  = wheelPI(leftPI, errorLeft);
   const float voltageRight = wheelPI(rightPI, errorRight);
 
   motor.motorVoltage[0] = -voltageLeft;
-  motor.motorVoltage[1] =  voltageRight;
+  motor.motorVoltage[1] = voltageRight;
 }
 
 
@@ -1044,8 +1192,8 @@ void loop(void)
       // Select one sequence:
       // sequenceTwoSteps();        // Original voltage steps
       // sequenceVelocityTest();    // Velocity reference test
-      sequenceTurnrateTest();    // Turnrate reference test
-
+      // sequenceTurnrateTest();    // Turnrate reference test
+      sequenceHeadingTest();     // Heading reference test
 
       if (state > 0)
       {

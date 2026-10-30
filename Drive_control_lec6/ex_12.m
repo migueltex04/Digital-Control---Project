@@ -24,7 +24,7 @@ B = 0.147;            % wheel base [m]
 
 %% Sampling time
 
-Ts = 0.008;
+Ts = 0.0005;
 
 Tsim = 14;
 
@@ -36,25 +36,18 @@ velocity_ref = zeros(size(t_ref));
 heading_ref = zeros(size(t_ref));
 
 v = 0.75;
-T_forward = 1;
-T_turn = 1;
+T_forward = 0.75/v;
 t_start = 0.5;
 
-t_end = t_start + 4*(T_forward + T_turn) + T_forward;
+t_end = t_start + 5*T_forward;
 
 velocity_ref(t_ref >= t_start & t_ref < t_end) = v;
 
 for k = 1:4
 
-    t1 = t_start + (k-1)*(T_forward + T_turn) + T_forward;
-    t2 = t1 + T_turn;
+    t_turn = t_start + k*T_forward;
 
-    idx = t_ref >= t1 & t_ref < t2;
-    tau = (t_ref(idx)-t1)/T_turn;
-
-    heading_ref(idx) = (k-1)*pi/2 + (pi/4)*(1-cos(pi*tau));
-
-    heading_ref(t_ref >= t2) = k*pi/2;
+    heading_ref(t_ref >= t_turn) = k*pi/2;
 
 end
 
@@ -122,8 +115,8 @@ w_input = [t_ref heading_ref];
 
 % Adequate for reality (it was too slow) (maybe the higher gain is useful to counter the static drag
 % on the floor because with Leonora upside down it behaves differently, the Kp = 0.04 was enough)
-Kp = 0.08;
-tau_I = 0.4;
+Kp = 0.04;
+tau_I = 0.16;
 Ki = Kp/tau_I;
 
 
@@ -134,6 +127,8 @@ tau_I_tr = 0.2;
 Ki_tr = Kp_tr / tau_I_tr;
 
 %% Heading Controller
+
+discrete_true = -1;
 
 Kph = 1;
 
@@ -164,60 +159,108 @@ grid on
 
 %% Heading lead compensator
 
-PM_desired = 90;
+PM_desired = 72;
 PM_safety = 0;
-wc = 3; % Desired crossover frequency [rad/s]
+BW_desired = 14.4/3; % Desired crossover frequency [rad/s] - One third of the closed loop frequency of the wheel speed controller
 
-Gjw = squeeze(freqresp(Gheading,wc));
+wc = BW_desired/1.5; % Initial estimate
 
-mag = abs(Gjw);
-phase = rad2deg(angle(Gjw));
+for k = 1:30
 
-phi = PM_desired - 180 - phase + PM_safety;
+    Gjw = squeeze(freqresp(Gheading,wc));
 
-if phi <= 0 || phi >= 90
-    error('Chosen crossover requires an unsuitable phase lead. Change wc or verify Gheading.')
+    mag = abs(Gjw);
+    phase = rad2deg(angle(Gjw));
+
+    if phase > 0
+        phase = phase - 360;
+    end
+
+    phi_required = PM_desired + PM_safety - 180 - phase;
+    phi = max(15,phi_required);
+
+    if phi >= 80
+        error('Required phase lead is too large. Reduce BW_desired.')
+    end
+
+    alpha = (1-sind(phi))/(1+sind(phi));
+
+    Tlead = 1/(wc*sqrt(alpha));
+
+    num_ctrl = [Tlead 1];
+    den_ctrl = [alpha*Tlead 1];
+
+    Clead = tf(num_ctrl,den_ctrl);
+
+    Kph = 1/(mag*abs(squeeze(freqresp(Clead,wc))));
+
+    Lheading = Kph*Clead*Gheading;
+    Tclosed = feedback(Lheading,1);
+
+    if ~isstable(Tclosed)
+        error('Closed-loop unstable. Reduce BW_desired.')
+    end
+
+    BW_actual = bandwidth(Tclosed);
+
+    if ~isfinite(BW_actual)
+        error('Closed-loop bandwidth could not be determined.')
+    end
+
+    if abs(BW_actual-BW_desired)/BW_desired < 0.01
+        break
+    end
+
+    wc = wc*(BW_desired/BW_actual)^0.5;
+
 end
 
-alpha = (1-sind(phi))/(1+sind(phi));
+% Tuning
 
-Tlead = 1/(wc*sqrt(alpha));
+alpha = min(1,alpha*1.6);
+Tlead = Tlead*0.7;
+Kph = 3.4;
 
 num_ctrl = [Tlead 1];
 den_ctrl = [alpha*Tlead 1];
 
 Clead = tf(num_ctrl,den_ctrl);
 
-Kph = 1/(mag*abs(squeeze(freqresp(Clead,wc))));
-
 Lheading = Kph*Clead*Gheading;
+Tclosed = feedback(Lheading,1);
+
+BW_actual = bandwidth(Tclosed);
+
+[GM,PM,Wcg,Wcp] = margin(Lheading);
+
+fprintf('Desired bandwidth = %.2f rad/s\n',BW_desired);
+fprintf('Actual bandwidth = %.2f rad/s\n',BW_actual);
+fprintf('Gain crossover = %.2f rad/s\n',Wcp);
+fprintf('Phase margin = %.2f deg\n',PM);
+fprintf('Gain margin = %.2f dB\n',20*log10(GM));
+fprintf('alpha = %.4f\n',alpha);
+fprintf('Tlead = %.4f\n',Tlead);
+fprintf('Kph = %.4f\n',Kph);
+
+if abs(BW_actual-BW_desired)/BW_desired >= 0.01
+    warning('Bandwidth target not reached within 30 iterations.')
+end
+
+if PM < PM_desired
+    warning('The achieved phase margin is below the requirement.')
+end
 
 figure
 margin(Lheading)
 grid on
 
-Tclosed = feedback(Lheading,1);
-
-disp('Closed-loop bandwidth:')
-disp(bandwidth(Tclosed))
-
-
-disp('Closed-loop stable:')
-disp(isstable(Tclosed))
-
 figure
 step(Tclosed)
 grid on
 
-[GM,PM,Wcg,Wcp] = margin(Lheading);
-
-fprintf('Phase margin = %.2f deg\n',PM);
-fprintf('Gain crossover = %.2f rad/s\n',Wcp);
-fprintf('Gain margin = %.2f dB\n',20*log10(GM));
-
-Kph = 10;
-
 %% Simulink model
+
+discrete_true = 1;
 
 out = sim(model,Tsim);
 
