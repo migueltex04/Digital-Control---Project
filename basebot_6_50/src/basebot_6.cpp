@@ -71,6 +71,22 @@ const float KphHeading = 2.07f;
 const float TleadHeading = 0.2052f;
 const float alphaHeading = 0.9421f;
 
+// Acceleration limiter
+
+const float Kacc = 25.0f;
+const float miu  =  2.0f;
+const float g    = 9.81f;
+const float accMax = miu * g;  // m/s^2
+
+// The acceleration limiter has a problem when impleemnted here.
+// It restricts the motor to a maxium linear acceleration and a maximum turning acceleration,
+// but if we are accelerating linearly and tell it to turn at the same time, in one of the wheels those
+// accelerations will sum and that wheel will slip. The way to prevent this is to put this acceleration
+// controller/limiter after the mixer, at the input of each wheel velocity reference;
+// however, this may be problematic when starting to speed up. But it may be worthy to test though,
+// if the mission starts getting too specific and we tell Leonora to slow down before a turn
+// and accelerate and change heading at the same time.
+
 // Gyroscope inclination
 
 const float gyroTilt = 22.0f;
@@ -110,6 +126,9 @@ struct HeadingLeadState
 };
 
 HeadingLeadState headingLead = {0, 0};
+
+float linearLimiter = 0.0f;
+float turningLimiter = 0.0f;
 
 
 // ============================================================
@@ -362,6 +381,24 @@ float headingControl(float error)
         fminf(turnrateMax, turnrateCommand));
 }
 
+// ============================================================
+// ACCELERATION CONTROLLER AND LIMITER
+// ============================================================
+
+float accelerationLimiter(float &memory, float reference)
+{
+    const float error = reference - memory;
+
+    const float acceleration = Kacc * error;
+
+    const float limitedAcceleration =
+        fmaxf(-accMax, fminf(accMax, acceleration));
+
+    memory += limitedAcceleration * ts;
+
+    return memory;
+}
+
 
 // ============================================================
 // 13. UPDATE GYROSCOPE HEADING
@@ -500,6 +537,9 @@ void resetStates()
     turnratePI = {0, 0};
 
     headingLead = {0, 0};
+
+    linearLimiter = 0.0f;
+    turningLimiter = 0.0f;
 
     // NEW: reset gyroscope integration
 
@@ -728,19 +768,15 @@ void controlUpdatePI()
         return;
     }
 
-    // ========================================================
     // MAIN CHANGE: GYROSCOPE HEADING FEEDBACK
-    // ========================================================
 
-    // OLD:
+    // Old:
     // const float headingError = desiredHeading - pose[2];
 
-    // NEW:
+    // New:
 
     const float headingError =
         desiredHeading - headingGyro;
-
-    // ========================================================
 
     const float headingTurnrateRef =
         headingControl(headingError);
@@ -760,15 +796,21 @@ void controlUpdatePI()
 
     desiredTurnrate = headingTurnrateRef;
 
-    // Wheel velocity references
+    // Acceleration limiters before mixer
 
-    inVelLeft =
-        desiredValue -
+    const float limitedVelocity =
+        accelerationLimiter(linearLimiter, desiredValue);
+
+    const float turningVelocity =
         0.5f * wheelBase * turnrateCommand;
 
-    inVelRight =
-        desiredValue +
-        0.5f * wheelBase * turnrateCommand;
+    const float limitedTurningVelocity =
+        accelerationLimiter(turningLimiter, turningVelocity);
+
+    // Mixer
+
+    inVelLeft = limitedVelocity - limitedTurningVelocity;
+    inVelRight = limitedVelocity + limitedTurningVelocity;
 
     // Convert wheel linear velocities to motor angular velocities
 
@@ -805,7 +847,6 @@ void controlUpdatePI()
     // Motor commands
 
     motor.motorVoltage[0] = -voltageLeft;
-
     motor.motorVoltage[1] = voltageRight;
 }
 
