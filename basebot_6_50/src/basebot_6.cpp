@@ -1,40 +1,31 @@
 /***************************************************************************
-*   Copyright (C) 2024 by DTU
-*   jcan@dtu.dk
-*
-*   Base Teensy firmware
-*   build for Teensy 4.1,
-*   intended for digital control course
-*
-* The MIT License (MIT)  https://mit-license.org/
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the “Software”), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-*/
+ * DTU DIGITAL CONTROL
+ * BASEBOT - HEADING CONTROL WITH GYROSCOPE FEEDBACK
+ *
+ * Teensy 4.1
+ *
+ * Same trajectory and controller parameters as original experiment.
+ *
+ * Main change:
+ * Heading feedback uses the integrated gyroscope instead of encoders.
+ *
+ * Wheel velocity PI controllers still use encoders.
+ *
+ * Logging:
+ * Columns 1-28: original format
+ * Column 29: gyroscope heading [rad]
+ *
+ * Send L to retrieve logs.
+ ***************************************************************************/
 
-void printLog();
-
+#include <Arduino.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <IntervalTimer.h>
 
-// Support functions
 #include "src/udisplay.h"
 #include "src/urobot.h"
 #include "src/uusb.h"
@@ -43,46 +34,62 @@ void printLog();
 #include "src/uencoder.h"
 
 
-/**
- * Global variables
- */
+// ============================================================
+// 1. PARAMETERS
+// ============================================================
 
-// Sample time can not go lower than 300us
-const uint32_t sampleTimeUs = 500; // desired sample time in us - CHANGED
-const float ts = sampleTimeUs * 1e-6; // sample time in seconds
+const uint32_t sampleTimeUs = 500;
+const float ts = sampleTimeUs * 1e-6f;
 
-// Robot configuration
-const float gear = 9.6;
-// const float wheelRadius = 0.0315; // (m)
-const float wheelRadius = 0.03380; // calibrated effective radius (m) - needed to
-                                   // accomplish the physical desired distance - MIGHT NEED A RECHECK
-const float wheelBase = 0.147; // (m)
+// Robot geometry
 
-// Controller Gains
-const float Kp   = 0.04f;
-const float taui = 0.16f;
-const float Ki   = Kp / taui;
+const float gear = 9.6f;
+const float wheelRadius = 0.03380f;
+const float wheelBase = 0.147f;
+
+// Wheel PI
+
+const float Kp = 0.040f;
+const float taui = 0.160f;
+const float Ki = Kp / taui;
+
 const float voltageMax = 9.0f;
 
-// Turn-rate PI gains
-const float KpTurn = 0.0443322593f;      // To be tuned
-const float tauiTurn = 0.00778527218f;   // To be tuned
+// Turnrate PI (not used in this experiment)
+
+const float KpTurn = 0.0443322593f;
+const float tauiTurn = 0.00778527218f;
 const float KiTurn = KpTurn / tauiTurn;
-
-const float turnrateMax = 4.0f; // rad/s - To be checked
-
-// Heading phase-lead controller
-const float KphHeading = 3.4f;
-const float TleadHeading = 0.2052f;
-const float alphaHeading = 0.9421f;
 
 const bool useTurnrateCascade = false;
 
+const float turnrateMax = 4.0f;
+
+// Heading phase-lead
+
+const float KphHeading = 2.07f;
+const float TleadHeading = 0.2052f;
+const float alphaHeading = 0.9421f;
+
+// Gyroscope inclination
+
+const float gyroTilt = 22.0f;
+
+// Set to +1 if positive physical yaw gives positive gyro Z.
+// If the signs are opposite, this must be -1.
+// Do not run closed-loop heading control with an unverified sign.
+
+const float gyroSign = 1.0f;
+
+
+// ============================================================
+// 2. CONTROLLER STATES
+// ============================================================
 
 struct Integrator
 {
-  float value;
-  float previousInput;
+    float value;
+    float previousInput;
 };
 
 Integrator distanceIntegral = {0, 0};
@@ -91,1164 +98,1058 @@ Integrator headingIntegral = {0, 0};
 Integrator xIntegral = {0, 0};
 Integrator yIntegral = {0, 0};
 
-Integrator leftPI  = {0, 0};
+Integrator leftPI = {0, 0};
 Integrator rightPI = {0, 0};
 
 Integrator turnratePI = {0, 0};
 
 struct HeadingLeadState
 {
-  float previousError;
-  float previousOutput;
+    float previousError;
+    float previousOutput;
 };
 
 HeadingLeadState headingLead = {0, 0};
 
-// pose values
-float distA = 0; // trip distance
-float pose[4]     = {0, 0, 0, 0}; // x, y, heading, signed distance
-float poseVel[2]  = {0, 0}; // forward velocity, turn rate
-float wheelVel[2] = {0, 0}; // left and right wheel linear velocities
-bool velSaturated = false;
+
+// ============================================================
+// 3. ROBOT VARIABLES
+// ============================================================
+
+float distA = 0;
+
+float pose[4] = {0, 0, 0, 0};
+
+float poseVel[2] = {0, 0};
+
+float wheelVel[2] = {0, 0};
+
 bool firstPoseSample = true;
+
 bool piControlActive = false;
 
 
-// ////////////////////////////////////////
-// define a structure for log elements
+// ============================================================
+// 4. GYROSCOPE VARIABLES
+// ============================================================
+
+float headingGyro = 0.0f;
+
+float turnrateGyro = 0.0f;
+
+float previousTurnrateGyro = 0.0f;
+
+bool firstGyroSample = true;
+
+
+// ============================================================
+// 5. EXPERIMENT STATE
+// ============================================================
+
+int state = 0;
+
+float endTime = 0;
+
+float desiredValue = 0;
+
+float desiredHeading = 0;
+
+float desiredTurnrate = 0;
+
+float inVelLeft = 0;
+
+float inVelRight = 0;
+
+
+// ============================================================
+// 6. TIMER
+// ============================================================
+
+bool isSampleTime = false;
+
+float time_sec = 0;
+
+IntervalTimer sampleTimer;
+
+void timerInterrupt()
+{
+    isSampleTime = true;
+
+    time_sec += sampleTimeUs / 1e6f;
+}
+
+
+// ============================================================
+// 7. LOG STRUCTURE
+// ============================================================
 
 typedef struct
 {
-  float time;
-  int state;
-  float desiredValue;
-  float desiredHeading;
-  float desiredTurnrate;
-  float motorVel[2];
-  float motorVolt[2];
-  int32_t encoder[2];
-  float motorCurrent[2];
-  float battery;
-  float pose[4];
-  float distA;
-  float poseVel[2];
-  float wheelVel[2];
-  float inVelLeft;
-  float inVelRight;
+    float time;
 
-  // Gyroscope data:
-  // gyro[0], gyro[1], gyro[2]
-  float gyro[3];
+    int state;
 
-  float headU;
-  float accVel;
-  float accTurn;
+    float desiredValue;
+
+    float desiredHeading;
+
+    float desiredTurnrate;
+
+    float motorVel[2];
+
+    float motorVolt[2];
+
+    int32_t encoder[2];
+
+    float motorCurrent[2];
+
+    float battery;
+
+    float pose[4];
+
+    float distA;
+
+    float poseVel[2];
+
+    float wheelVel[2];
+
+    float inVelLeft;
+
+    float inVelRight;
+
+    float gyro[3];
+
+    // NEW: integrated gyroscope heading
+
+    float headingGyro;
 
 } LogData;
 
 
-// allocate memory for data log in memory block 2 available only through malloc/new
-// (specific for this micro processor, a Teensy 4)
-const int logsMax = 400000 / sizeof(LogData); // allocates 400kBytes
-LogData * logs = (LogData*)malloc(logsMax * sizeof(LogData));
-int logsCnt = 0; // next log entry to use / i.e. number of used log entries
-bool usbMonitorPreviouslyConnected = false;
-const int logEvery = 10; // use logEvery = 1 for the initial steps and spikes experiment
+// ============================================================
+// 8. LOG MEMORY
+// ============================================================
+
+const int logsMax = 400000 / sizeof(LogData);
+
+LogData *logs = (LogData *)malloc(
+    logsMax * sizeof(LogData));
+
+int logsCnt = 0;
+
+const int logEvery = 10;
+
 int logSampleCounter = 0;
 
+bool usbMonitorPreviouslyConnected = false;
 
-void printLog()
+
+// ============================================================
+// 9. INTEGRATION
+// ============================================================
+
+float integrate(
+    Integrator &memory,
+    float input,
+    float dt)
 {
-  LogData * d = logs;
+    memory.value +=
+        0.5f * dt *
+        (input + memory.previousInput);
 
-  Serial.print("% Basebot log for ");
-  Serial.println(robot.getRobotName());
+    memory.previousInput = input;
 
-  // hard-coded settings
-  Serial.print("% Sample time ");
-  Serial.print(sampleTimeUs);
-
-  Serial.print(" us, Gear ");
-  Serial.print(gear);
-
-  Serial.print(", Wheels ");
-  Serial.print(wheelRadius);
-
-  Serial.print(" m, PPR ");
-  Serial.println(encoder.pulsPerRev);
-
-  Serial.print("% maximum log samples ");
-  Serial.print(logsMax);
-
-  Serial.print(" each sized ");
-  Serial.print(sizeof(LogData));
-  Serial.println(" bytes");
-
-  if (piControlActive)
-    Serial.println("% Mode: wheel PI; column 3 is velocity reference (m/s)");
-  else
-    Serial.println("% Mode: direct voltage; column 3 is voltage reference (V)");
-
-  Serial.print("% Nominal log interval (s): ");
-  Serial.println(logEvery * ts, 4);
-
-
- // Columns
-
-  Serial.println("% 1 time (sec)");
-  Serial.println("% 2 state");
-  Serial.println("% 3 Desired value");
-
-  Serial.println("% 4-5 motor voltage (left,right) (V)");
-  Serial.println("% 6-7 Encoder count (left,right)");
-  Serial.println("% 8-9 motor vel (left,right) (rad/s)");
-
-  Serial.println("% 10-11 motor current (left,right) (A)");
-
-  Serial.println("% 12 Battery voltage (V)");
-
-  // gyro columns
-  Serial.println("% 13 gyro[0]");
-  Serial.println("% 14 gyro[1]");
-  Serial.println("% 15 gyro[2]");
-
-  Serial.println("% 16 Turnrate reference (rad/s)");
-  Serial.println("% 17 Forward velocity (m/s)");
-  Serial.println("% 18 Turnrate (rad/s)");
-  Serial.println("% 19 x (m)");
-  Serial.println("% 20 y (m)");
-  Serial.println("% 21 Heading (rad)");
-  Serial.println("% 22 Signed distance (m)");
-  Serial.println("% 23 Total distance travelled (m)");
-  Serial.println("% 24-25 Wheel velocity (left,right) (m/s)");
-  Serial.println("% 26-27 Wheel velocity reference (left,right) (m/s)");
-  Serial.println("% 28 Heading reference (rad)");
-  Serial.println("% Columns 16 and 26-27 are motion references for PI mode only");
-
-
-  for (int i = 0; i < logsCnt; i++)
-  {
-    Serial.print(d->time,4);                            // 1
-    Serial.print(" ");
-    Serial.print(d->state);                             // 2
-
-    Serial.print(" ");
-    Serial.print(d->desiredValue,2);                    // 3
-
-    Serial.print(" ");
-    Serial.print(d->motorVolt[0],2);                    // 4 (V)
-
-    Serial.print(" ");
-    Serial.print(d->motorVolt[1],2);                    // 5 (V)
-
-    Serial.print(" ");
-    Serial.print(d->encoder[0]);                        // 6
-
-    Serial.print(" ");
-    Serial.print(d->encoder[1]);                        // 7
-
-    Serial.print(" ");
-    Serial.print(d->motorVel[0],2);                     // 8 (rad/s)
-
-    Serial.print(" ");
-    Serial.print(d->motorVel[1],2);     // 9 (rad/s)
-
-    //ADDED CURRENT VALUES (4 LINES LEFT AND RIGHT)
-    Serial.print(" ");
-    Serial.print(d->motorCurrent[0],4);
-
-    Serial.print(" ");
-    Serial.print(d->motorCurrent[1],4);
-
-    Serial.print(" ");
-    Serial.print(d->battery,2);                         // 10 (V)
-
-
-    // ADDED: print gyro measurements
-    Serial.print(" ");
-    Serial.print(d->gyro[0],4);                         // 11
-
-    Serial.print(" ");
-    Serial.print(d->gyro[1],4);                         // 12
-
-    Serial.print(" ");
-    Serial.print(d->gyro[2],4);                         // 13
-
-    Serial.print(" ");
-    Serial.print(d->desiredTurnrate, 5);
-
-    for (int j = 0; j < 2; j++)
-    {
-      Serial.print(" ");
-      Serial.print(d->poseVel[j],5);
-    }
-
-    for (int j = 0; j < 4; j++)
-    {
-      Serial.print(" ");
-      Serial.print(d->pose[j],5);
-    }
-
-    Serial.print(" ");
-    Serial.print(d->distA,5);
-
-    for (int j = 0; j < 2; j++)
-    {
-      Serial.print(" ");
-      Serial.print(d->wheelVel[j],5);
-    }
-
-    Serial.print(" ");
-    Serial.print(d->inVelLeft,5);
-
-    Serial.print(" ");
-    Serial.print(d->inVelRight,5);
-
-    Serial.print(" ");
-    Serial.print(d->desiredHeading,5);
-
-    Serial.println("");
-
-    d++;
-  }
-
-  Serial.print("% sent ");
-  Serial.print(logsCnt);
-  Serial.println(" log lines");
+    return memory.value;
 }
 
 
-// ////////////////////////////////////////
-
-/**
- * Global variables for timing
- */
-
-bool isSampleTime = false;
-float time_sec = 0;
-
-// Timer that controls sample time (interrupt based)
-IntervalTimer sampleTimer;
-
-
-void timerInterrupt()
-{
-  isSampleTime = true;
-  time_sec += sampleTimeUs / 1e6;
-}
-
-
-/**
- * declaration, that there is a reset function
- */
-void reset();
-
-
-/**
- * Global variables for state machine
- */
-
-int state = 0;               // actual sequence state
-float endTime = 0;           // for current state
-float desiredValue = 0;      // desired (reference) value send to controller
-float desiredHeading = 0;    // rad
-
-float desiredTurnrate = 0; // rad/s
-float inVelLeft = 0;       // m/s
-float inVelRight = 0;      // m/s
-
-float integrate(Integrator &memory, float input, float dt)
-{
-  memory.value += 0.5f * dt * (input + memory.previousInput);
-  memory.previousInput = input;
-  return memory.value;
-}
+// ============================================================
+// 10. WHEEL PI
+// ============================================================
 
 float wheelPI(Integrator &memory, float error)
 {
-  const float oldIntegral = memory.value;
+    const float oldIntegral = memory.value;
 
-  integrate(memory, error, ts);
+    integrate(memory, error, ts);
 
-  float voltage = Kp * error + Ki * memory.value;
+    float voltage =
+        Kp * error + Ki * memory.value;
 
-  // Check if this is really necessary. It is used to prevent anti-windup
-  const float integralChange = Ki * (memory.value - oldIntegral);
+    const float integralChange =
+        Ki * (memory.value - oldIntegral);
 
-  if ((voltage > voltageMax && integralChange > 0) || (voltage < -voltageMax && integralChange < 0))
-  {
-    memory.value = oldIntegral;
-    voltage = Kp * error + Ki * memory.value;
-  }
+    if ((voltage > voltageMax && integralChange > 0) ||
+        (voltage < -voltageMax && integralChange < 0))
+    {
+        memory.value = oldIntegral;
 
-  return fmaxf(-voltageMax, fminf(voltageMax, voltage));
+        voltage =
+            Kp * error + Ki * memory.value;
+    }
 
+    return fmaxf(
+        -voltageMax,
+        fminf(voltageMax, voltage));
 }
 
-float turnrateControl(float error) // Because it only has one Integrator variable to control - Integrator turnratePI
+
+// ============================================================
+// 11. TURNRATE PI
+// ============================================================
+
+float turnrateControl(float error)
 {
-  const float oldIntegral = turnratePI.value;
+    const float oldIntegral = turnratePI.value;
 
-  integrate(turnratePI, error, ts);
+    integrate(turnratePI, error, ts);
 
-  float turnrateCommand = KpTurn * error + KiTurn * turnratePI.value;
+    float turnrateCommand =
+        KpTurn * error + KiTurn * turnratePI.value;
 
-  // Check if this is really necessary. It is used to prevent anti-windup
-  const float integralChange = KiTurn * (turnratePI.value - oldIntegral);
+    const float integralChange =
+        KiTurn * (turnratePI.value - oldIntegral);
 
-  if ((turnrateCommand > turnrateMax && integralChange > 0) || (turnrateCommand < -turnrateMax && integralChange < 0))
-  {
-    turnratePI.value = oldIntegral;
-    turnrateCommand = KpTurn * error + KiTurn * turnratePI.value;
-  }
+    if ((turnrateCommand > turnrateMax &&
+         integralChange > 0) ||
+        (turnrateCommand < -turnrateMax &&
+         integralChange < 0))
+    {
+        turnratePI.value = oldIntegral;
 
-  return fmaxf(-turnrateMax, fminf(turnrateMax, turnrateCommand));
+        turnrateCommand =
+            KpTurn * error + KiTurn * turnratePI.value;
+    }
 
+    return fmaxf(
+        -turnrateMax,
+        fminf(turnrateMax, turnrateCommand));
 }
+
+
+// ============================================================
+// 12. HEADING PHASE-LEAD
+// ============================================================
 
 float headingControl(float error)
 {
-  const float d = 2.0f * alphaHeading * TleadHeading + ts;
+    const float d =
+        2.0f * alphaHeading * TleadHeading + ts;
 
-  const float b0 = (2.0f * TleadHeading + ts) / d;
-  const float b1 = (ts - 2.0f * TleadHeading) / d;
-  const float a1 = (ts - 2.0f * alphaHeading * TleadHeading) / d;
+    const float b0 =
+        (2.0f * TleadHeading + ts) / d;
 
-  const float leadOutput =
-      b0 * error
-    + b1 * headingLead.previousError
-    - a1 * headingLead.previousOutput;
+    const float b1 =
+        (ts - 2.0f * TleadHeading) / d;
 
-  headingLead.previousError = error;
-  headingLead.previousOutput = leadOutput;
+    const float a1 =
+        (ts - 2.0f * alphaHeading * TleadHeading) / d;
 
-  const float turnrateCommand = KphHeading * leadOutput;
+    const float leadOutput =
+          b0 * error
+        + b1 * headingLead.previousError
+        - a1 * headingLead.previousOutput;
 
-  return fmaxf(-turnrateMax, fminf(turnrateMax, turnrateCommand));
+    headingLead.previousError = error;
+
+    headingLead.previousOutput = leadOutput;
+
+    const float turnrateCommand =
+        KphHeading * leadOutput;
+
+    return fmaxf(
+        -turnrateMax,
+        fminf(turnrateMax, turnrateCommand));
 }
+
+
+// ============================================================
+// 13. UPDATE GYROSCOPE HEADING
+// ============================================================
+
+void updateGyroHeading()
+{
+    // imu2.gyro[2] is already calibrated by uimu2.cpp
+    // Units: degrees/second
+
+    const float gyroZ = imu2.gyro[2];
+
+    // Convert deg/s to rad/s
+    // Correct approximately for the 22-degree tilt
+
+    turnrateGyro =
+        gyroSign *
+        gyroZ *
+        (PI / 180.0f) /
+        cosf(gyroTilt * PI / 180.0f);
+
+    // Avoid using an uninitialized previous sample
+
+    if (firstGyroSample)
+    {
+        previousTurnrateGyro = turnrateGyro;
+
+        firstGyroSample = false;
+
+        return;
+    }
+
+    // Trapezoidal integration
+
+    headingGyro +=
+        0.5f * ts *
+        (turnrateGyro + previousTurnrateGyro);
+
+    previousTurnrateGyro = turnrateGyro;
+}
+
+
+// ============================================================
+// 14. UPDATE ENCODER ODOMETRY
+// ============================================================
 
 void updatePose()
 {
-  wheelVel[0] = -encoder.motorVelocity[0] * wheelRadius / gear;
-  wheelVel[1] =  encoder.motorVelocity[1] * wheelRadius / gear;
+    wheelVel[0] =
+        -encoder.motorVelocity[0] *
+        wheelRadius / gear;
 
-  poseVel[0] = 0.5f * (wheelVel[0] + wheelVel[1]);
-  poseVel[1] = (wheelVel[1] - wheelVel[0]) / wheelBase;
+    wheelVel[1] =
+         encoder.motorVelocity[1] *
+         wheelRadius / gear;
 
-  if (firstPoseSample)
-  {
-    distanceIntegral.previousInput = poseVel[0];
-    tripIntegral.previousInput = fabsf(poseVel[0]);
-    headingIntegral.previousInput = poseVel[1];
-    xIntegral.previousInput = poseVel[0];
-    yIntegral.previousInput = 0;
+    poseVel[0] =
+        0.5f * (wheelVel[0] + wheelVel[1]);
 
-    firstPoseSample = false;
-    return;
-  }
+    poseVel[1] =
+        (wheelVel[1] - wheelVel[0]) / wheelBase;
 
-  pose [2] = integrate(headingIntegral, poseVel[1], ts);
+    if (firstPoseSample)
+    {
+        distanceIntegral.previousInput = poseVel[0];
 
-  pose[3] = integrate(distanceIntegral, poseVel[0], ts);
-  distA   = integrate(tripIntegral, fabsf(poseVel[0]), ts);
+        tripIntegral.previousInput =
+            fabsf(poseVel[0]);
 
-  pose[0] = integrate(xIntegral, poseVel[0] * cosf(pose[2]), ts);
-  pose[1] = integrate(yIntegral, poseVel[0] * sinf(pose[2]), ts);
+        headingIntegral.previousInput = poseVel[1];
+
+        xIntegral.previousInput = poseVel[0];
+
+        yIntegral.previousInput = 0;
+
+        firstPoseSample = false;
+
+        return;
+    }
+
+    // Encoder heading is retained for comparison
+
+    pose[2] =
+        integrate(headingIntegral, poseVel[1], ts);
+
+    pose[3] =
+        integrate(distanceIntegral, poseVel[0], ts);
+
+    distA =
+        integrate(tripIntegral, fabsf(poseVel[0]), ts);
+
+    pose[0] =
+        integrate(
+            xIntegral,
+            poseVel[0] * cosf(pose[2]),
+            ts);
+
+    pose[1] =
+        integrate(
+            yIntegral,
+            poseVel[0] * sinf(pose[2]),
+            ts);
 }
+
+
+// ============================================================
+// 15. RESET CONTROLLER STATES
+// ============================================================
 
 void resetStates()
 {
-  distanceIntegral = {0, 0};
-  tripIntegral = {0, 0};
-  headingIntegral = {0, 0};
-  xIntegral = {0, 0};
-  yIntegral = {0, 0};
-
-  for (int i = 0; i < 4; i++)
-    pose[i] = 0;
-
-  for (int i = 0; i < 2; i++)
-  {
-    poseVel[i] = 0;
-    wheelVel[i] = 0;
-  }
-
-  distA = 0;
-  firstPoseSample = true;
-
-  leftPI  = {0, 0};
-  rightPI = {0, 0};
-
-  turnratePI = {0, 0};
-
-  headingLead = {0, 0};
-}
-
-void start()
-{
-  // Start timing
-
-  // reset log and encoders
-  logsCnt = 0;
-  logSampleCounter = 0;
-
-  resetStates();
-
-  // change motor PWM frequency for sampling time test
-  // should not be above 100000 (100kHz), default is 80kHz.
-  motor.setPWMfrq(80000);
-
-  time_sec = 0;
-
-  encoder.encoder[0] = 0; // left motor encoder
-  encoder.encoder[1] = 0; // right motor encoder
-
-  // Update of display takes too long for fast sampling
-  // so, disable during sequence.
-  display.useDisplay = false;
-
-  desiredTurnrate = 0;
-
-  desiredHeading = 0;
-
-}
-
-
-
-void stop(float after)
-{
-  // stop, but allow continued logging for a while
-  state = 2;
-  desiredValue = 0;
-  desiredTurnrate = 0;  
-  desiredHeading = pose[2];
-  // end log after an additional short time
-  endTime = time_sec + after;
-}
-
-
-
-void finished()
-{
-  // prepare for a new start
-
-  // stop motors
-  motor.motorVoltage[0] = 0; // left motor
-  motor.motorVoltage[1] = 0; // right motor
-
-  // set default PWM frequency
-  motor.setPWMfrq(80000);
-
-  // start updating display
-  display.useDisplay = true;
-
-  // wait for next button press
-  state = 0;
-
-  if (Serial)
-  {
-    Serial.print("% Finished. Saved samples: ");
-    Serial.println(logsCnt);
-    printLog();
-  }
-}
-
-
-
-/**
- * Simple 2-step sequence
- */
-
-void sequenceTwoSteps()
-{
-  // this function is called at every sample time
-  // and should never wait in a loop.
-  // Update variables as needed and return.
-
-  bool button;
-
-  //
-  // this is a state machine
-  // state 0: wait for start button press
-  // other states are part of a sequence
-
-  switch (state)
-  {
-    // run mission, initial value
-    case 0:
-      // State 0 is just inactive, waiting for the start signal.
-
-      button = digitalReadFast(PIN_START_BUTTON);
-
-      if (button or robot.missionStart)
-      {
-        // starting by a short time to get zero velocity data to the log
-
-        // reset for new run
-        start();
-
-        // Prepare next state
-        desiredValue = 0; // reference value to the controller
-
-        // to get start the log with no velocity
-        endTime = time_sec + 0.020; // new state to end after 20ms
-
-        state = 10;
-      }
-
-      break;
-
-
-    case 10:
-      // Waiting for first step (zero velocity to log) to finish.
-
-      if (time_sec > endTime)
-      {
-        // change to next values - drive
-        desiredValue = 1.5;
-        // should be in meters/sec, but is motor voltage for now,
-
-        endTime = time_sec + 0.50; //0.5 second
-
-        state = 11;
-      }
-
-      break;
-
-
-    case 11:
-      // First step
-
-      // test if ready for next state
-      if (time_sec > endTime)
-      {
-        // change to next values
-        desiredValue = 3;
-
-        endTime = time_sec + 0.50;
-
-        state = 12;
-      }
-
-      break;
-
-
-    case 12:
-      // Second step
-
-      if (time_sec > endTime)
-      {
-        // change to next values
-        desiredValue = 6;
-
-        endTime = time_sec + 0.5;
-
-        state = 100;
-      }
-
-      break;
-
-
-    case 100:
-      // Maintain last step
-
-      // stop after end time
-      if (time_sec > endTime)
-      {
-        // stop, but continue logging for a while (0.3 sec)
-        stop(0.3);
-      }
-
-      break;
-
-
-    default:
-      // Hold until finished
-
-      // this state is needed to enable a new start
-      if (time_sec > endTime)
-      {
-        finished();
-      }
-
-      break;
-  }
-}
-
-
-//ADDED
-void sequenceSpikes()
-{
-  // this function is called at every sample time
-  // and should never wait in a loop.
-  // Update variables as needed and return.
-
-  bool button;
-
-  switch (state)
-  {
-    case 0: // Inactive, waiting for start signal
-      button = digitalReadFast(PIN_START_BUTTON);
-
-      if (button or robot.missionStart)
-      {
-        // Reset for new run
-        start();
-
-        // seq2 at t = 0.00 s
-        desiredValue = 0.0;
-
-        // Next change at t = 0.05 s
-        endTime = time_sec + 0.05;
-
-        state = 10;
-      }
-      break;
-
-
-    case 10: // t = 0.00 -> 0.05 s, desiredValue = 0
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.05 s
-        desiredValue = 6.0;
-
-        // Next change at t = 0.06 s
-        endTime = time_sec + 0.01;
-
-        state = 11;
-      }
-      break;
-
-
-    case 11: // t = 0.05 -> 0.06 s, desiredValue = 6
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.06 s
-        desiredValue = 0.0;
-
-        // Next change at t = 0.30 s
-        endTime = time_sec + 0.24;
-
-        state = 12;
-      }
-      break;
-
-
-    case 12: // t = 0.06 -> 0.30 s, desiredValue = 0
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.30 s
-        desiredValue = 6.0;
-
-        // Next change at t = 0.31 s
-        endTime = time_sec + 0.01;
-
-        state = 13;
-      }
-      break;
-
-
-    case 13: // t = 0.30 -> 0.31 s, desiredValue = 6
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.31 s
-        desiredValue = 0.0;
-
-        // Next change at t = 0.60 s
-        endTime = time_sec + 0.29;
-
-        state = 14;
-      }
-      break;
-
-
-    case 14: // t = 0.31 -> 0.60 s, desiredValue = 0
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.60 s
-        desiredValue = 6.0;
-
-        // Next change at t = 0.61 s
-        endTime = time_sec + 0.01;
-
-        state = 15;
-      }
-      break;
-
-
-    case 15: // t = 0.60 -> 0.61 s, desiredValue = 6
-      if (time_sec > endTime)
-      {
-        // seq2 at t = 0.61 s
-        desiredValue = 0.0;
-
-        // Continue logging for 0.3 s
-        stop(0.3);
-      }
-      break;
-
-
-    default: // Hold until finished
-      if (time_sec > endTime)
-        finished();
-
-      break;
-  }
-}
-
-void sequenceVelocityTest()
-{
-  switch (state)
-  {
-    case 0:
-      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
-      {
-        start();
-
-        desiredValue = 0;
-        desiredTurnrate = 0;
-
-        endTime = time_sec + 0.1f;
-        state = 10;
-      }
-      break;
-
-    case 10:
-      if (time_sec >= endTime)
-      {
-        desiredValue = 0.30f;
-        desiredTurnrate = 0;
-
-        endTime = time_sec + 3.0f;
-        state = 11;
-      }
-      break;
-
-    case 11:
-      if (time_sec >= endTime)
-      {
-        stop(0.5f);
-      }
-      break;
-
-    case 2:
-      if (time_sec >= endTime)
-      {
-        finished();
-      }
-      break;
-  }
-}
-
-void sequenceTurnrateTest()
-{
-  switch (state)
-  {
-    case 0:
-      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
-      {
-        start();
-
-        desiredValue = 0.0f;
-        desiredTurnrate = 0.0f;
-
-        endTime = 0.5f;
-        state = 10;
-      }
-      break;
-
-    case 10:
-      if (time_sec >= endTime)
-      {
-        desiredValue = 0.3f;
-        desiredTurnrate = 0.0f;
-
-        endTime = 2.0f;
-        state = 11;
-      }
-      break;
-
-    case 11:
-      if (time_sec >= endTime)
-      {
-        desiredTurnrate = 0.5f;
-
-        endTime = 4.0f;
-        state = 12;
-      }
-      break;
-
-    case 12:
-      if (time_sec >= endTime)
-      {
-        stop(0.5f);
-      }
-      break;
-
-    case 2:
-      if (time_sec >= endTime)
-      {
-        finished();
-      }
-      break;
-  }
-}
-
-void sequenceHeadingTest()
-{
-  switch (state)
-  {
-    case 0:
-      if (digitalReadFast(PIN_START_BUTTON) || robot.missionStart)
-      {
-        start();
-
-        desiredValue = 0.0f;
-        desiredHeading = 0.0f;
-
-        endTime = 0.5f;
-        state = 10;
-      }
-      break;
-
-    case 10:
-      if (time_sec >= endTime)
-      {
-        desiredValue = 0.75f;
-
-        endTime = 1.5f;
-        state = 11;
-      }
-      break;
-
-    case 11:
-      if (time_sec >= endTime)
-      {
-        desiredHeading = PI / 2.0f;
-
-        endTime = 2.5f;
-        state = 12;
-      }
-      break;
-
-    case 12:
-      if (time_sec >= endTime)
-      {
-        desiredHeading = PI;
-
-        endTime = 3.5f;
-        state = 13;
-      }
-      break;
-
-    case 13:
-      if (time_sec >= endTime)
-      {
-        desiredHeading = 3.0f * PI / 2.0f;
-
-        endTime = 4.5f;
-        state = 14;
-      }
-      break;
-
-    case 14:
-      if (time_sec >= endTime)
-      {
-        desiredHeading = 2.0f * PI;
-
-        endTime = 5.5f;
-        state = 15;
-      }
-      break;
-
-    case 15:
-      if (time_sec >= endTime)
-      {
-        stop(0.5f);
-      }
-      break;
-
-    case 2:
-      if (time_sec >= endTime)
-      {
-        finished();
-      }
-      break;
-  }
-}
-
-/**
- * make the control
- */
-
-void controlUpdateVoltage() // For the straightforward sequencetwosteps or sequencespikes
-{
-  piControlActive = false;
-
-  // do control during a mission only.
-  // called at every tick
-
-  float velRef = desiredValue;
-
-  //
-  // For a start, the desiredValue
-  // is just used as motor voltage
-  //
-
-  // Left motor voltage (-9V to +9V)
-  motor.motorVoltage[0] = -velRef;
-
-  // Right motor voltage (-9V to +9V)
-  motor.motorVoltage[1] = velRef;
-
-  //
-  // in the main loop, there is a motor.tick() that actually send the
-  // values to the motor.
-}
-
-void controlUpdatePI()
-{
-  piControlActive = true;
-
-  if (state == 2)
-  {
-    inVelLeft = 0;
-    inVelRight = 0;
-    motor.motorVoltage[0] = 0;
-    motor.motorVoltage[1] = 0;
-    return;
-  }
-
-  const float headingError = desiredHeading - pose[2];
-
-  const float headingTurnrateRef = headingControl(headingError);
-
-  float turnrateCommand = headingTurnrateRef;
-
-  if (useTurnrateCascade)
-  {
-    const float measuredTurnrate = poseVel[1];
-    const float turnrateError = headingTurnrateRef - measuredTurnrate;
-
-    turnrateCommand = turnrateControl(turnrateError);
-  }
-
-  desiredTurnrate = headingTurnrateRef;
-
-  inVelLeft  = desiredValue - 0.5f * wheelBase * turnrateCommand;
-  inVelRight = desiredValue + 0.5f * wheelBase * turnrateCommand;
-
-  const float omegaRefLeft  = inVelLeft * gear / wheelRadius;
-  const float omegaRefRight = inVelRight * gear / wheelRadius;
-
-  const float omegaLeft  = -encoder.motorVelocity[0];
-  const float omegaRight = encoder.motorVelocity[1];
-
-  const float errorLeft  = omegaRefLeft - omegaLeft;
-  const float errorRight = omegaRefRight - omegaRight;
-
-  const float voltageLeft  = wheelPI(leftPI, errorLeft);
-  const float voltageRight = wheelPI(rightPI, errorRight);
-
-  motor.motorVoltage[0] = -voltageLeft;
-  motor.motorVoltage[1] = voltageRight;
-}
-
-
-void updateLog()
-{
-  // step response mode
-
-  if (state <= 0)
-    return;
-
-  if (logSampleCounter++ % logEvery != 0)
-    return;
-
-  if (state > 0 and logsCnt < logsMax)
-  {
-    // save data for this sample into dataLog structure
-
-    logs[logsCnt].time = time_sec;
-
-    logs[logsCnt].state = state;
-
-    logs[logsCnt].desiredValue = desiredValue;
-
-    logs[logsCnt].motorVolt[0] = -motor.motorVoltage[0];
-    // The left motor runs backwards, therefore the sign.
-
-    logs[logsCnt].motorVolt[1] = motor.motorVoltage[1];
-
-    logs[logsCnt].encoder[0] = -encoder.encoder[0];
-
-    logs[logsCnt].encoder[1] = encoder.encoder[1];
-
-    logs[logsCnt].motorVel[0] = -encoder.motorVelocity[0];
-
-    logs[logsCnt].motorVel[1] = encoder.motorVelocity[1];
-
-    logs[logsCnt].battery = robot.batteryVoltage;
-
-
-    // the last part is offset of current measurement (in Amps)
-    // take the initial current readings and add or subtract as needed
-    // these values fits Leonora
-
-    logs[logsCnt].desiredHeading = desiredHeading;
-
-    logs[logsCnt].motorCurrent[0] =
-        -(analogRead(A1) - 2048) * 0.0045 + 0.3195;
-
-    logs[logsCnt].motorCurrent[1] =
-         (analogRead(A0) - 2048) * 0.0045 - 0.3465;
-
-    logs[logsCnt].poseVel[0] = poseVel[0];
-
-    logs[logsCnt].poseVel[1] = poseVel[1];
-
-   //saving the current in logData
-
-    logs[logsCnt].gyro[0] = imu2.gyro[0];
-    logs[logsCnt].gyro[1] = imu2.gyro[1];
-    logs[logsCnt].gyro[2] = imu2.gyro[2];
-
-
-    // add more items as needed, NB! also the struct definition at top.
-
-    logs[logsCnt].desiredTurnrate = desiredTurnrate;
+    distanceIntegral = {0, 0};
+    tripIntegral = {0, 0};
+    headingIntegral = {0, 0};
+    xIntegral = {0, 0};
+    yIntegral = {0, 0};
 
     for (int i = 0; i < 4; i++)
     {
-      logs[logsCnt].pose[i] = pose[i];
+        pose[i] = 0;
     }
 
-    logs[logsCnt].distA = distA;
+    for (int i = 0; i < 2; i++)
+    {
+        poseVel[i] = 0;
+        wheelVel[i] = 0;
+    }
 
-    logs[logsCnt].wheelVel[0] = wheelVel[0];
-    logs[logsCnt].wheelVel[1] = wheelVel[1];
+    distA = 0;
 
-    logs[logsCnt].inVelLeft = inVelLeft;
-    logs[logsCnt].inVelRight = inVelRight;
+    firstPoseSample = true;
 
-    logsCnt++;
-  }
+    leftPI = {0, 0};
+    rightPI = {0, 0};
+
+    turnratePI = {0, 0};
+
+    headingLead = {0, 0};
+
+    // NEW: reset gyroscope integration
+
+    headingGyro = 0.0f;
+
+    turnrateGyro = 0.0f;
+
+    previousTurnrateGyro = 0.0f;
+
+    firstGyroSample = true;
 }
 
 
+// ============================================================
+// 16. START
+// ============================================================
+
+void start()
+{
+    logsCnt = 0;
+
+    logSampleCounter = 0;
+
+    resetStates();
+
+    motor.setPWMfrq(80000);
+
+    time_sec = 0;
+
+    encoder.encoder[0] = 0;
+    encoder.encoder[1] = 0;
+
+    display.useDisplay = false;
+
+    desiredTurnrate = 0;
+
+    desiredHeading = 0;
+}
+
+
+// ============================================================
+// 17. STOP
+// ============================================================
+
+void stop(float after)
+{
+    state = 2;
+
+    desiredValue = 0;
+
+    desiredTurnrate = 0;
+
+    // Keep the reference consistent with the feedback source
+
+    desiredHeading = headingGyro;
+
+    endTime = time_sec + after;
+}
+
+
+// ============================================================
+// 18. FINISHED
+// ============================================================
+
+void finished()
+{
+    motor.motorVoltage[0] = 0;
+    motor.motorVoltage[1] = 0;
+
+    motor.setPWMfrq(80000);
+
+    display.useDisplay = true;
+
+    state = 0;
+
+    if (Serial)
+    {
+        Serial.print("% Finished. Saved samples: ");
+        Serial.println(logsCnt);
+    }
+}
+
+
+// ============================================================
+// 19. ORIGINAL HEADING SEQUENCE
+// ============================================================
+
+void sequenceHeadingTest()
+{
+    switch (state)
+    {
+        case 0:
+
+            if (digitalReadFast(PIN_START_BUTTON) ||
+                robot.missionStart)
+            {
+                // Prevent running with uncalibrated gyroscope
+
+                if (!imu2.gyroOffsetDone)
+                {
+                    break;
+                }
+
+                start();
+
+                desiredValue = 0.0f;
+
+                desiredHeading = 0.0f;
+
+                endTime = 0.5f;
+
+                state = 10;
+            }
+
+            break;
+
+
+        case 10:
+
+            if (time_sec >= endTime)
+            {
+                desiredValue = 0.75f;
+
+                endTime = 1.5f;
+
+                state = 11;
+            }
+
+            break;
+
+
+        case 11:
+
+            if (time_sec >= endTime)
+            {
+                desiredHeading = PI / 2.0f;
+
+                endTime = 2.5f;
+
+                state = 12;
+            }
+
+            break;
+
+
+        case 12:
+
+            if (time_sec >= endTime)
+            {
+                desiredHeading = PI;
+
+                endTime = 3.5f;
+
+                state = 13;
+            }
+
+            break;
+
+
+        case 13:
+
+            if (time_sec >= endTime)
+            {
+                desiredHeading = 3.0f * PI / 2.0f;
+
+                endTime = 4.5f;
+
+                state = 14;
+            }
+
+            break;
+
+
+        case 14:
+
+            if (time_sec >= endTime)
+            {
+                desiredHeading = 2.0f * PI;
+
+                endTime = 5.5f;
+
+                state = 15;
+            }
+
+            break;
+
+
+        case 15:
+
+            if (time_sec >= endTime)
+            {
+                stop(0.5f);
+            }
+
+            break;
+
+
+        case 2:
+
+            if (time_sec >= endTime)
+            {
+                finished();
+            }
+
+            break;
+    }
+}
+
+
+// ============================================================
+// 20. CONTROL UPDATE
+// ============================================================
+
+void controlUpdatePI()
+{
+    piControlActive = true;
+
+    if (state == 2)
+    {
+        inVelLeft = 0;
+        inVelRight = 0;
+
+        motor.motorVoltage[0] = 0;
+        motor.motorVoltage[1] = 0;
+
+        return;
+    }
+
+    // ========================================================
+    // MAIN CHANGE: GYROSCOPE HEADING FEEDBACK
+    // ========================================================
+
+    // OLD:
+    // const float headingError = desiredHeading - pose[2];
+
+    // NEW:
+
+    const float headingError =
+        desiredHeading - headingGyro;
+
+    // ========================================================
+
+    const float headingTurnrateRef =
+        headingControl(headingError);
+
+    float turnrateCommand = headingTurnrateRef;
+
+    if (useTurnrateCascade)
+    {
+        const float measuredTurnrate = poseVel[1];
+
+        const float turnrateError =
+            headingTurnrateRef - measuredTurnrate;
+
+        turnrateCommand =
+            turnrateControl(turnrateError);
+    }
+
+    desiredTurnrate = headingTurnrateRef;
+
+    // Wheel velocity references
+
+    inVelLeft =
+        desiredValue -
+        0.5f * wheelBase * turnrateCommand;
+
+    inVelRight =
+        desiredValue +
+        0.5f * wheelBase * turnrateCommand;
+
+    // Convert wheel linear velocities to motor angular velocities
+
+    const float omegaRefLeft =
+        inVelLeft * gear / wheelRadius;
+
+    const float omegaRefRight =
+        inVelRight * gear / wheelRadius;
+
+    // Encoders still control wheel velocity
+
+    const float omegaLeft =
+        -encoder.motorVelocity[0];
+
+    const float omegaRight =
+         encoder.motorVelocity[1];
+
+    // Wheel velocity errors
+
+    const float errorLeft =
+        omegaRefLeft - omegaLeft;
+
+    const float errorRight =
+        omegaRefRight - omegaRight;
+
+    // Wheel PI controllers
+
+    const float voltageLeft =
+        wheelPI(leftPI, errorLeft);
+
+    const float voltageRight =
+        wheelPI(rightPI, errorRight);
+
+    // Motor commands
+
+    motor.motorVoltage[0] = -voltageLeft;
+
+    motor.motorVoltage[1] = voltageRight;
+}
+
+
+// ============================================================
+// 21. UPDATE LOG
+// ============================================================
+
+void updateLog()
+{
+    if (state <= 0)
+        return;
+
+    if (logSampleCounter++ % logEvery != 0)
+        return;
+
+    if (logs == nullptr || logsCnt >= logsMax)
+        return;
+
+    LogData &d = logs[logsCnt];
+
+    d.time = time_sec;
+
+    d.state = state;
+
+    d.desiredValue = desiredValue;
+
+    d.motorVolt[0] = -motor.motorVoltage[0];
+
+    d.motorVolt[1] = motor.motorVoltage[1];
+
+    d.encoder[0] = -encoder.encoder[0];
+
+    d.encoder[1] = encoder.encoder[1];
+
+    d.motorVel[0] = -encoder.motorVelocity[0];
+
+    d.motorVel[1] = encoder.motorVelocity[1];
+
+    d.motorCurrent[0] =
+        -(analogRead(A1) - 2048) * 0.0045f + 0.3195f;
+
+    d.motorCurrent[1] =
+         (analogRead(A0) - 2048) * 0.0045f - 0.3465f;
+
+    d.battery = robot.batteryVoltage;
+
+    d.gyro[0] = imu2.gyro[0];
+    d.gyro[1] = imu2.gyro[1];
+    d.gyro[2] = imu2.gyro[2];
+
+    d.desiredTurnrate = desiredTurnrate;
+
+    for (int i = 0; i < 4; i++)
+    {
+        d.pose[i] = pose[i];
+    }
+
+    d.distA = distA;
+
+    for (int i = 0; i < 2; i++)
+    {
+        d.poseVel[i] = poseVel[i];
+
+        d.wheelVel[i] = wheelVel[i];
+    }
+
+    d.inVelLeft = inVelLeft;
+
+    d.inVelRight = inVelRight;
+
+    d.desiredHeading = desiredHeading;
+
+    // NEW: save integrated gyro heading
+
+    d.headingGyro = headingGyro;
+
+    logsCnt++;
+}
+
+
+// ============================================================
+// 22. PRINT LOG
+// ============================================================
+
+void printLog()
+{
+    if (logs == nullptr)
+        return;
+
+    Serial.println("% BASEBOT - GYROSCOPE HEADING FEEDBACK");
+
+    Serial.println("% Original heading sequence");
+
+    Serial.println("% Wheel PI: Kp=0.040, tauI=0.160");
+
+    Serial.println("% Heading phase lead: Kp=3.4, T=0.2052, alpha=0.9421");
+
+    Serial.println("% Feedback source: integrated gyroscope");
+
+    Serial.println("% Gyroscope readings: deg/s");
+
+    Serial.println("% Column 21: encoder heading [rad]");
+
+    Serial.println("% Column 29: gyroscope heading [rad]");
+
+    Serial.println("% Columns:");
+
+    Serial.println("% 1 time [s]");
+    Serial.println("% 2 state");
+    Serial.println("% 3 velocity reference [m/s]");
+    Serial.println("% 4-5 motor voltage [V]");
+    Serial.println("% 6-7 encoder counts");
+    Serial.println("% 8-9 motor angular velocities [rad/s]");
+    Serial.println("% 10-11 motor currents [A]");
+    Serial.println("% 12 battery voltage [V]");
+    Serial.println("% 13-15 gyro X,Y,Z [deg/s]");
+    Serial.println("% 16 turnrate reference [rad/s]");
+    Serial.println("% 17 forward velocity [m/s]");
+    Serial.println("% 18 encoder turnrate [rad/s]");
+    Serial.println("% 19-20 encoder position X,Y [m]");
+    Serial.println("% 21 encoder heading [rad]");
+    Serial.println("% 22 signed distance [m]");
+    Serial.println("% 23 total distance [m]");
+    Serial.println("% 24-25 wheel velocities [m/s]");
+    Serial.println("% 26-27 wheel velocity references [m/s]");
+    Serial.println("% 28 heading reference [rad]");
+    Serial.println("% 29 gyroscope heading [rad]");
+
+    for (int i = 0; i < logsCnt; i++)
+    {
+        const LogData &d = logs[i];
+
+        Serial.print(d.time, 4);
+        Serial.print(" ");
+
+        Serial.print(d.state);
+        Serial.print(" ");
+
+        Serial.print(d.desiredValue, 4);
+        Serial.print(" ");
+
+        Serial.print(d.motorVolt[0], 4);
+        Serial.print(" ");
+
+        Serial.print(d.motorVolt[1], 4);
+        Serial.print(" ");
+
+        Serial.print(d.encoder[0]);
+        Serial.print(" ");
+
+        Serial.print(d.encoder[1]);
+        Serial.print(" ");
+
+        Serial.print(d.motorVel[0], 4);
+        Serial.print(" ");
+
+        Serial.print(d.motorVel[1], 4);
+        Serial.print(" ");
+
+        Serial.print(d.motorCurrent[0], 4);
+        Serial.print(" ");
+
+        Serial.print(d.motorCurrent[1], 4);
+        Serial.print(" ");
+
+        Serial.print(d.battery, 4);
+        Serial.print(" ");
+
+        Serial.print(d.gyro[0], 4);
+        Serial.print(" ");
+
+        Serial.print(d.gyro[1], 4);
+        Serial.print(" ");
+
+        Serial.print(d.gyro[2], 4);
+        Serial.print(" ");
+
+        Serial.print(d.desiredTurnrate, 5);
+
+        for (int j = 0; j < 2; j++)
+        {
+            Serial.print(" ");
+            Serial.print(d.poseVel[j], 5);
+        }
+
+        for (int j = 0; j < 4; j++)
+        {
+            Serial.print(" ");
+            Serial.print(d.pose[j], 5);
+        }
+
+        Serial.print(" ");
+        Serial.print(d.distA, 5);
+
+        for (int j = 0; j < 2; j++)
+        {
+            Serial.print(" ");
+            Serial.print(d.wheelVel[j], 5);
+        }
+
+        Serial.print(" ");
+        Serial.print(d.inVelLeft, 5);
+
+        Serial.print(" ");
+        Serial.print(d.inVelRight, 5);
+
+        Serial.print(" ");
+        Serial.print(d.desiredHeading, 5);
+
+        // Column 29
+
+        Serial.print(" ");
+        Serial.println(d.headingGyro, 5);
+    }
+
+    Serial.print("% sent ");
+    Serial.print(logsCnt);
+    Serial.println(" log lines");
+}
+
+
+// ============================================================
+// 23. SETUP
+// ============================================================
 
 void setup()
 {
-  // INITIALIZATION
+    Serial.begin(12000000);
 
-  // to be able to print to USB interface
-  Serial.begin(12000000);
+    sampleTimer.begin(timerInterrupt, sampleTimeUs);
 
-  sampleTimer.begin(timerInterrupt, sampleTimeUs);
+    robot.setup();
 
-  // initialize sensors, safety and display
-  robot.setup(); // alive LED, display and battery
+    motor.setup();
 
-  motor.setup(); // motor voltage
+    encoder.setup();
 
-  encoder.setup(); // motor encoders to velocity
+    encoder.pulsPerRev = 48;
 
-  encoder.pulsPerRev = 48;
+    imu2.setup();
 
-  imu2.setup(); // gyro and accelerometer
+    motor.setPWMfrq(0x13000);
 
-  motor.setPWMfrq(0x13000); // 0x13000 = 77824 Hz
+    usb.setup();
 
-  usb.setup();
-
-  display.useDisplay = true;
+    display.useDisplay = true;
 }
 
 
-
-/**
- * Main loop
- */
+// ============================================================
+// 24. MAIN LOOP
+// ============================================================
 
 void loop(void)
 {
-  // init sample time
-
-  while (true)
-  {
-    // main loop
-
-    // loop until time for next sample
-    if (isSampleTime)
+    while (true)
     {
-      // start of new control cycle
-
-      isSampleTime = false;
-
-      // read sensors
-      imu2.tick();
-      encoder.tick();
-
-      // Select one sequence:
-      // sequenceTwoSteps();        // Original voltage steps
-      // sequenceVelocityTest();    // Velocity reference test
-      // sequenceTurnrateTest();    // Turnrate reference test
-      sequenceHeadingTest();     // Heading reference test
-
-      if (state > 0)
-      {
-        // Only if started
-        updatePose();
-
-        // Select the matching control:
-        // controlUpdateVoltage(); // Direct voltage
-        controlUpdatePI();      // Wheel PI control
-      }
-
-      // give value to actuators
-      motor.tick();
-
-      // save relevant values
-      updateLog();
-
-      // support functions
-      robot.tick();   // measure battery voltage etc.
-
-      display.tick(); // update O-LED display
-    }
-
-    const bool usbMonitorConnected = (bool)Serial;
-    if (state == 0 && usbMonitorConnected)
-    {
-      if (!usbMonitorPreviouslyConnected && logsCnt > 0)
-      {
-        Serial.print("% Reconnected. Saved samples: ");
-        Serial.println(logsCnt);
-        printLog();
-      }
-
-      if (Serial.available() > 0)
-      {
-        const int incoming = Serial.peek();
-        if (incoming == 'L' || incoming == 'l')
+        if (isSampleTime)
         {
-          Serial.read();
-          if (logsCnt > 0)
-          {
-            Serial.print("% Requested saved samples: ");
-            Serial.println(logsCnt);
-            printLog();
-          }
-          else
-            Serial.println("% No RAM logs. Start a test with the button first.");
+            isSampleTime = false;
+
+            // Read sensors
+
+            imu2.tick();
+
+            encoder.tick();
+
+            // Original heading sequence
+
+            sequenceHeadingTest();
+
+            if (state > 0)
+            {
+                // Encoder odometry retained for logging
+
+                updatePose();
+
+                // NEW: gyroscope integration
+
+                updateGyroHeading();
+
+                // Heading feedback uses gyroscope
+
+                controlUpdatePI();
+            }
+
+            // Apply motor voltages
+
+            motor.tick();
+
+            // Save data
+
+            updateLog();
+
+            // DTU support functions
+
+            robot.tick();
+
+            display.tick();
         }
-      }
+
+        // ================================================
+        // USB LOG RETRIEVAL
+        // ================================================
+
+        const bool usbMonitorConnected = (bool)Serial;
+
+        if (state == 0 && usbMonitorConnected)
+        {
+            if (!usbMonitorPreviouslyConnected &&
+                logsCnt > 0)
+            {
+                Serial.print("% Reconnected. Saved samples: ");
+                Serial.println(logsCnt);
+
+                printLog();
+            }
+
+            if (Serial.available() > 0)
+            {
+                const int incoming = Serial.peek();
+
+                if (incoming == 'L' || incoming == 'l')
+                {
+                    Serial.read();
+
+                    if (logsCnt > 0)
+                    {
+                        Serial.print("% Requested saved samples: ");
+                        Serial.println(logsCnt);
+
+                        printLog();
+                    }
+                    else
+                    {
+                        Serial.println("% No RAM logs.");
+                    }
+                }
+            }
+        }
+
+        usbMonitorPreviouslyConnected = usbMonitorConnected;
+
+        usb.tick();
     }
-    usbMonitorPreviouslyConnected = usbMonitorConnected;
-
-    usb.tick(); // listen to incoming from USB
-  }
 }
-
-
-/////////////////////////////////////////////////////////////////
