@@ -74,7 +74,7 @@ const float alphaHeading = 0.9421f;
 // Acceleration limiter
 
 const float Kacc = 25.0f;
-const float miu  =  2.0f;
+const float miu  =  0.3f;
 const float g    = 9.81f;
 const float accMax = miu * g;  // m/s^2
 

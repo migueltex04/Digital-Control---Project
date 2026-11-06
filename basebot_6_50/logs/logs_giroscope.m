@@ -600,3 +600,136 @@ legend('Location','best');
 xlim([t(1) t(lastTracking)]);
 
 sgtitle('Basebot - Position Tracking with Gyroscope Feedback');
+
+%% 13. ACCELERATION LIMITER ANALYSIS - PARAMETERS
+% Set accMaxAnalysis to the accMax used in the selected C++ experiment.
+% It is NOT stored in the current 29-column log.
+% Examples: original code = 19.62; first limited experiment = 1.0.
+accMaxAnalysis = 2.943;  % [m/s^2] CHANGE TO MATCH THE EXPERIMENT
+wheelBaseAnalysis = 0.147;  % [m], must match C++
+
+% These additions do not modify any of the original calculations above.
+% Gyro + encoder XY remains an estimate, not independent ground truth.
+% Acceleration below is the slope of a COMMAND, not measured robot acceleration.
+
+wheelRefLeftAcc  = data(:,26);
+wheelRefRightAcc = data(:,27);
+
+% Recover the two limiter outputs by inverting the mixer.
+vLimitedAcc = 0.5 * (wheelRefRightAcc + wheelRefLeftAcc);
+vTurnLimitedAcc = 0.5 * (wheelRefRightAcc - wheelRefLeftAcc);
+vTurnRequestedAcc = 0.5 * wheelBaseAnalysis * data(:,16);
+
+% Use state, since idxTracking was overwritten in the original script.
+idxActiveAcc = data(:,2) > 0 & data(:,2) ~= 2;
+if ~isscalar(accMaxAnalysis) || ~isfinite(accMaxAnalysis) || accMaxAnalysis <= 0
+    error('accMaxAnalysis must be a positive finite scalar.');
+end
+
+%% 14. FIGURE 4 - REFERENCES BEFORE AND AFTER THE LIMITERS
+figure('Color','w','Position',[220 120 1100 750]);
+
+subplot(2,1,1);
+hold on;
+plot(t(idxActiveAcc), data(idxActiveAcc,3), 'k--', ...
+    'LineWidth',1.5,'DisplayName','Requested forward velocity');
+plot(t(idxActiveAcc), vLimitedAcc(idxActiveAcc), 'b-', ...
+    'LineWidth',1.6,'DisplayName','Limited forward velocity reference');
+plot(t(idxActiveAcc), data(idxActiveAcc,17), ...
+    'Color',[0.85 0.3 0.1],'LineWidth',1.1, ...
+    'DisplayName','Encoder forward velocity (estimate)');
+xlabel('Time [s]'); ylabel('Velocity [m/s]');
+title('Forward velocity limiter');
+grid on; box on; legend('Location','best');
+
+subplot(2,1,2);
+hold on;
+plot(t(idxActiveAcc), vTurnRequestedAcc(idxActiveAcc), 'k--', ...
+    'LineWidth',1.5,'DisplayName','Requested turning component: B/2 * turnrate');
+plot(t(idxActiveAcc), vTurnLimitedAcc(idxActiveAcc), 'b-', ...
+    'LineWidth',1.6,'DisplayName','Limited turning component');
+xlabel('Time [s]'); ylabel('Wheel-speed turning component [m/s]');
+title('Turning limiter (linear wheel-speed units, not rad/s)');
+grid on; box on; legend('Location','best');
+sgtitle('Acceleration limiters - input and output references');
+
+%% 15. ESTIMATE REFERENCE ACCELERATIONS FROM LOGGED SAMPLES
+% Difference only adjacent active samples. Never differentiate across stop.
+% Each value is an average slope over one logging interval (~5 ms),
+% not the instantaneous internal acceleration at the 0.5 ms control rate.
+% Printed references have finite precision, causing small numerical errors.
+dtAcc = diff(t);
+validPairsAcc = idxActiveAcc(1:end-1) & idxActiveAcc(2:end) ...
+    & isfinite(dtAcc) & dtAcc > 0;
+if ~any(validPairsAcc)
+    error('No valid adjacent active samples for acceleration analysis.');
+end
+
+tMidAcc = 0.5 * (t(1:end-1) + t(2:end));
+aForwardAcc = nan(size(dtAcc));
+aTurningAcc = nan(size(dtAcc));
+aLeftAcc = nan(size(dtAcc));
+aRightAcc = nan(size(dtAcc));
+
+dvForwardAcc = diff(vLimitedAcc);
+dvTurningAcc = diff(vTurnLimitedAcc);
+dvLeftAcc = diff(wheelRefLeftAcc);
+dvRightAcc = diff(wheelRefRightAcc);
+aForwardAcc(validPairsAcc) = dvForwardAcc(validPairsAcc) ./ dtAcc(validPairsAcc);
+aTurningAcc(validPairsAcc) = dvTurningAcc(validPairsAcc) ./ dtAcc(validPairsAcc);
+aLeftAcc(validPairsAcc) = dvLeftAcc(validPairsAcc) ./ dtAcc(validPairsAcc);
+aRightAcc(validPairsAcc) = dvRightAcc(validPairsAcc) ./ dtAcc(validPairsAcc);
+
+%% 16. FIGURE 5 - REFERENCE ACCELERATIONS AND CONFIGURED LIMIT
+figure('Color','w','Position',[240 90 1150 850]);
+
+subplot(3,1,1);
+hold on;
+plot(tMidAcc, aForwardAcc, 'b-', 'LineWidth',1.2, ...
+    'DisplayName','Forward reference acceleration');
+yline(accMaxAnalysis,'r--','DisplayName','+accMax');
+yline(-accMaxAnalysis,'r--','DisplayName','-accMax');
+xlabel('Time [s]'); ylabel('Acceleration [m/s^2]');
+title('Forward limiter output: interval-average slope');
+grid on; box on; legend('Location','best');
+
+subplot(3,1,2);
+hold on;
+plot(tMidAcc, aTurningAcc, 'b-', 'LineWidth',1.2, ...
+    'DisplayName','Turning-component reference acceleration');
+yline(accMaxAnalysis,'r--','DisplayName','+accMax');
+yline(-accMaxAnalysis,'r--','DisplayName','-accMax');
+xlabel('Time [s]'); ylabel('Acceleration [m/s^2]');
+title('Turning limiter output: interval-average slope');
+grid on; box on; legend('Location','best');
+
+subplot(3,1,3);
+hold on;
+plot(tMidAcc, aLeftAcc, 'b-', 'LineWidth',1.2, ...
+    'DisplayName','Left wheel reference acceleration');
+plot(tMidAcc, aRightAcc, 'Color',[0.85 0.3 0.1], 'LineWidth',1.2, ...
+    'DisplayName','Right wheel reference acceleration');
+yline(accMaxAnalysis,'k--','DisplayName','+accMax (comparison only)');
+yline(-accMaxAnalysis,'k--','DisplayName','-accMax (comparison only)');
+xlabel('Time [s]'); ylabel('Acceleration [m/s^2]');
+title('After mixer: wheel reference slopes can exceed accMax');
+grid on; box on; legend('Location','best');
+sgtitle(sprintf('Reference accelerations - configured accMax = %.3f m/s^2', ...
+    accMaxAnalysis));
+
+%% 17. ACCELERATION SUMMARY
+fprintf('\n========== ACCELERATION LIMITERS ==========\n');
+fprintf('Configured comparison limit: %.3f m/s^2 (entered manually)\n',accMaxAnalysis);
+fprintf('Max |forward reference acceleration|: %.3f m/s^2\n', ...
+    max(abs(aForwardAcc(validPairsAcc))));
+fprintf('Max |turning reference acceleration|: %.3f m/s^2\n', ...
+    max(abs(aTurningAcc(validPairsAcc))));
+fprintf('Max |left wheel reference acceleration|: %.3f m/s^2\n', ...
+    max(abs(aLeftAcc(validPairsAcc))));
+fprintf('Max |right wheel reference acceleration|: %.3f m/s^2\n', ...
+    max(abs(aRightAcc(validPairsAcc))));
+fprintf('Values are interval-average reference slopes, not physical accelerations.\n');
+fprintf('Stopping state 2 and intervals crossing it are excluded.\n');
+fprintf('Wheel slopes can exceed accMax because the limiters precede the mixer.\n');
+fprintf('XY trajectories still depend on encoder velocity: verify the physical path.\n');
+fprintf('===========================================\n');
