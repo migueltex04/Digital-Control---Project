@@ -1,10 +1,6 @@
 
 %% Exercise 1b - Velocity and heading control
 
-close all
-clear
-clc
-
 %% Motor parameters
 
 L  = 3.57e-3;        % H
@@ -52,8 +48,8 @@ for k = 1:4
 
 end
 
-v_input = [t_ref velocity_ref];
-w_input = [t_ref heading_ref];
+%v_input = [t_ref velocity_ref];
+%w_input = [t_ref heading_ref];
 
 %% Wheel Speed Controller
 
@@ -63,19 +59,19 @@ Ki = Kp/tau_I;
 
 %% Turn Rate Controller
 
-Kp_tr = 5;
+Kp_tr = 1;
 tau_I_tr = 0.2;
 Ki_tr = Kp_tr/tau_I_tr;
 
 %% Acceleration Controller
 
 g = 9.81;
-miu = 2;
+miu = 0.6;
 aup = miu*g;
 adown = -miu*g;
 Kp_acc  = 25;
 
-%% Heading Controller - Linearization
+%% Model Linearization Analysis
 
 discrete_true = -1;
 
@@ -84,10 +80,64 @@ Kph = 1;
 num_ctrl = 1;
 den_ctrl = 1;
 
-model = 'motor_model_23b_lec9';
+model = 'motor_model_23b_lec9_TR';
 
 load_system(model);
 open_system(model);
+
+%% Turn Rate Controller - Closed-loop bandwidth
+
+% The output of Heading_Controller is omega_ref.
+% Open the connection to the outer heading loop at that signal.
+ios_tr(1) = linio([model '/Heading_Controller'], ...
+                 1, 'openinput');
+
+% Robot model output 4 = actual turn rate.
+% Keep the turn-rate feedback loop CLOSED.
+ios_tr(2) = linio([model '/Robot model'], ...
+                 4, 'output');
+
+opt_tr = linearizeOptions;
+opt_tr.SampleTime = 0;
+
+% Initial rest condition, before the mission starts.
+op_tr = 0;
+
+sys_tr = linearize(model, ios_tr, op_tr, opt_tr);
+
+if sys_tr.Ts ~= 0
+    error('Turn-rate linearization is not continuous-time.')
+end
+
+Ttr = minreal(tf(sys_tr));
+
+if ~isstable(Ttr)
+    error('The turn-rate closed loop is unstable.')
+end
+
+BW_tr = bandwidth(Ttr);
+info_tr = stepinfo(Ttr);
+
+fprintf('\n--- Turn Rate Closed Loop ---\n');
+disp(Ttr)
+
+fprintf('DC gain = %.3f\n', dcgain(Ttr));
+fprintf('Bandwidth = %.3f rad/s\n', BW_tr);
+fprintf('Rise time = %.3f s\n', info_tr.RiseTime);
+fprintf('Settling time = %.3f s\n', info_tr.SettlingTime);
+fprintf('Overshoot = %.2f %%\n', info_tr.Overshoot);
+
+figure
+bode(Ttr)
+grid on
+title('Turn Rate - Closed-loop Frequency Response')
+
+figure
+step(Ttr)
+grid on
+title('Turn Rate - Closed-loop Step Response')
+
+%% Heading Controller - Linearization
 
 ios(1) = linio([model '/Heading_Controller/Uh'],1,'openinput');
 ios(2) = linio([model '/Robot model'],3,'output');
@@ -176,7 +226,7 @@ end
 
 %% Manual Controller Tuning
 
-Kph = 3.1;
+Kph = 4.1; 
 alpha = min(1,alpha*1.6); 
 Tlead = Tlead*1; 
 
@@ -270,6 +320,7 @@ plot(t,distance,'LineWidth',1.5)
 plot(t,velocity,'LineWidth',1.5)
 plot(t,heading,'LineWidth',1.5)
 plot(t,turnrate,'LineWidth',1.5)
+plot(turnrate_input(:,1), turnrate_input(:,2), 'LineWidth',1.5)
 
 grid on
 xlabel('Time (s)')
@@ -281,6 +332,7 @@ legend('Velocity reference (m/s)', ...
        'Robot velocity (m/s)', ...
        'Robot heading (rad)', ...
        'Robot turnrate (rad/s)', ...
+       'Turnrate reference (rad/s)', ...
        'Location','best')
 
 title('Exercise 1b - Velocity and Heading Control')
@@ -344,7 +396,7 @@ legend('Robot trajectory','Initial position','Final position', ...
 
 title('Robot Trajectory in the XY Plane')
 
-%% Acceleration
+%% Acceleration Plots
 
 t_acc  = out.accTurnVel.Time;
 accVel_data = out.accTurnVel.Data;
@@ -357,6 +409,21 @@ plot(t_acc,accVel,'LineWidth',1.5)
 
 grid on
 xlabel('Time (s)')
-ylabel('Forward Acceleration (V)')
-legend('Left motor','Right motor','Location','best')
-title('Actuator Inputs')
+ylabel('Linear Acceleration (m/s^2)')
+legend('Acceleration','Location','best')
+title('Acceleration')
+
+t_acc_lat  = out.accTurnHead.Time;
+accLat_data = out.accTurnHead.Data;
+
+accLat = accLat_data(:,2);
+
+figure
+
+plot(t_acc_lat,accLat,'LineWidth',1.5)
+
+grid on
+xlabel('Time (s)')
+ylabel('Rotating Acceleration (m/s^2)')
+legend('Acceleration','Location','best')
+title('Acceleration')
