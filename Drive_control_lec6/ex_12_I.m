@@ -8,7 +8,9 @@
 % the correct one by changing the reference (maybe not??...)
 
 % Remember that if it tumbles doing the semi circle, just reduce the limit
-% on the lateral (centripetal acceleration)
+% on the lateral (centripetal acceleration) - A PRIMEIRA COISA QUE EU VOU
+% TER DE PERCEBER É QUAL A VELOCIDADE LATERAL QUE ELA AGUENTA, E DEPOIS
+% FAZER A OTIMIZAÇÃO AQUI PARA O INTEGRAL
 
 %% Motor parameters
 
@@ -90,6 +92,8 @@ num_ctrl = 1;
 den_ctrl = 1;
 
 tau_I_head = 1e6;  % Nearly disables integral action during initial analysis
+
+headingIntegralThreshold = deg2rad(15);
 
 model = 'motor_model_23b_lec9_TR_I';
 
@@ -228,7 +232,7 @@ margin(Gheading)
 grid on
 title('Heading Plant - Bode Diagram')
 
-%% Heading Phase-Lead Controller Design - I will have to include integral control to compare it to the feedforward approach
+%% Heading Phase-Lead Controller Design
 
 PM_desired = 72;
 PM_safety = 0;
@@ -300,7 +304,7 @@ Clead = tf(num_ctrl,den_ctrl);
 Lheading = Kph*Clead*Gheading;
 Tclosed = feedback(Lheading,1);
 
-%% Heading Integral Action - THIS NEEDS CARE!!
+%% Heading Integral Action - THIS NEEDS CARE!! 
 
 % Phase-lead controller, matching the heading lead block
 num_ctrl = [Tlead 1];
@@ -313,7 +317,7 @@ Lbase = Kph*Clead*Gheading;
 [~,~,~,wc_head] = margin(Lbase);
 
 % Starting choice for integral time
-integralSeparation = 3;
+integralSeparation = 4;
 tau_I_head = integralSeparation/wc_head;
 
 % Match the separate gain + integrator + sum in Simulink

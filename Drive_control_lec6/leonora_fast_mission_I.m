@@ -23,8 +23,8 @@ clearvars;
 
 missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below
 useTimedHeadingWaits = true; % true: timed stops/heading steps; false: old smooth planner
-T_wait_heading = 0.3;      % [s] FIXED wait at EACH join; not scaled by slowFactor
-vCircleMax = 0.50;          % [m/s] circle speed cap BEFORE division by slowFactor
+T_wait_heading = 0.7;      % [s] FIXED wait at EACH join; not scaled by slowFactor
+vCircleMax = 0.5;          % [m/s] circle speed cap BEFORE division by slowFactor
 lineTolerance = 0.05;       % [m] nominal maximum line deviation: 0.02 or 0.05
 mu = 0.40;                 % [-] change for the floor: e.g. 0.30 or 0.40
 g = 9.81;                  % [m/s^2]
@@ -138,6 +138,15 @@ if useTimedHeadingWaits
     % Moving-circle turn rate only. Heading steps are executed by feedback.
     % Leave the trajectory feedforward branch disconnected in this mode.
     turnrate_ref = vCircle/circleRadius;
+    % Start braking earlier on the circle
+    t_brake_circle = 11.15;  % [s]
+    
+    idx = t_ref >= t_brake_circle & t_ref < t_circle_end;
+    
+    velocity_ref(idx) = max(0, circleProfile.vPeak ...
+        - circleProfile.a*(t_ref(idx) - t_brake_circle));
+    
+    % Original lines
     v_input = [t_ref velocity_ref];
     w_input = [t_ref heading_ref];
     turnrate_input = [t_ref turnrate_ref];

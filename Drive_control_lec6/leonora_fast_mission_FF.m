@@ -24,9 +24,9 @@ clearvars;
 missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below
 useTimedHeadingWaits = true; % true: timed stops/heading steps; false: old smooth planner
 T_wait_heading = 0.3;      % [s] FIXED wait at EACH join; not scaled by slowFactor
-vCircleMax = 0.50;          % [m/s] circle speed cap BEFORE division by slowFactor
+vCircleMax = Inf;          % [m/s] circle speed cap BEFORE division by slowFactor
 lineTolerance = 0.05;       % [m] nominal maximum line deviation: 0.02 or 0.05
-mu = 0.50;                 % [-] change for the floor: e.g. 0.30 or 0.40
+mu = 0.40;                 % [-] change for the floor: e.g. 0.30 or 0.40
 g = 9.81;                  % [m/s^2]
 aWheelMax = mu*g;          % [m/s^2] limit on EACH wheel, acceleration/braking
 vWheelMax = Inf;           % [m/s] no wheel speed restriction for now
@@ -138,6 +138,23 @@ if useTimedHeadingWaits
     % Moving-circle turn rate only. Heading steps are executed by feedback.
     % Leave the trajectory feedforward branch disconnected in this mode.
     turnrate_ref = vCircle/circleRadius;
+    
+    % Ramp from the velocity at 4.5 s to zero at 4.8 s - This values need
+    % to be tuned if Leonora tumbles in the circle because of the
+    % centripetal acceleration and a therefore lower vCircleMax
+    t_ramp_start = 4.5;
+    t_ramp_end   = 4.8;
+
+    v_ramp_start = interp1(t_ref, velocity_ref, t_ramp_start, 'linear');
+
+    idx = t_ref >= t_ramp_start & t_ref < t_ramp_end;
+
+    velocity_ref(idx) = v_ramp_start ...
+        .* (t_ramp_end - t_ref(idx))/(t_ramp_end - t_ramp_start);
+
+    % Stay stopped until the final straight
+    velocity_ref(t_ref >= t_ramp_end & t_ref < t_exit_start) = 0;
+    
     v_input = [t_ref velocity_ref];
     w_input = [t_ref heading_ref];
     turnrate_input = [t_ref turnrate_ref];

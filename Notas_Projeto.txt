@@ -1,3 +1,9 @@
 Importância de ter implementado sempre em qualquer missão uma fase de desaceleração das rodas. impede que o robot quase caia para a frente com a inércia e na verdade poupa tempo.
 
-Anti wind-up
+Anti wind-up (implementado no código cpp).
+
+Para o trajeto final começámos por definir a missão, usar apenas heading (problemas a seguir o circulo), acrescentámos turne rate controller (melhor mas ainda com problemas); depois usámos feedforward control (somando o input the turnrate que sabemos que precisamos para fazer a nossa missão); e depois testámos com integral action no heading control (melhora mas é insuficiente, se muito lento não segue bem no círculo, se muito rápido tem demasiado overshoot e também não é solução); tentativa de implementar um controlador não linear em que a integral action só fica ativa já perto do set point (pode ser solução mas na simulação o feedforward tem melhor performance, em cerca de o dobro)
+
+I need to tune mu so that the wheels do not slip;
+then slowFactor so that the inputs do not saturate;
+and then change the mission so that it follows the correct one by changing the reference (maybe not!...)

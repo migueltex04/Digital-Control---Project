@@ -226,7 +226,7 @@ margin(Gheading)
 grid on
 title('Heading Plant - Bode Diagram')
 
-%% Heading Phase-Lead Controller Design - I will have to include integral control to compare it to the feedforward approach
+%% Heading Phase-Lead Controller Design 
 
 PM_desired = 72;
 PM_safety = 0;
