@@ -7,3 +7,10 @@ Para o trajeto final começámos por definir a missão, usar apenas heading (pro
 I need to tune mu so that the wheels do not slip;
 then slowFactor so that the inputs do not saturate;
 and then change the mission so that it follows the correct one by changing the reference (maybe not!...)
+
+
+O que é preciso fazer 11/11:
+
+Apertar a roda o mais próximo possível da distancia B = 14.7 cm.
+
+Com o código cpp que já existe: estimar o máximo de mu que o chão da sala aguenta; estimar o máximo de aceleração centrípeta que a Leonora aguenta (para saber a velocidade máxima a que podemos fazer o círculo de 0.5m de raio) (acho que dá para percebermos com o teste do quadrado, ou então mudamos para um círculo muito simples, já agora de 0.5m de raio também).
