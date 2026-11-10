@@ -1,4 +1,4 @@
-%% LEONORA_FAST_MISSION - DO WE REALLY NEED SUCH A COMPLEX CODE FOR THIS?? (EXPLORE...)
+%% LEONORA_FAST_MISSION - Automatically scheduled timed mission
 % Run this script to create v_input and w_input for your CURRENT Simulink model.
 % w_input contains HEADING [rad], despite its existing name.
 % No controller changes or extra toolboxes are required.
@@ -13,16 +13,20 @@
 % mu is an empirical parameter in aWheelMax = mu*g, not a full tyre model.
 % Reference: https://arxiv.org/abs/1707.07239 (reachability-based time scaling).
 
-clc
-clearvars
-close all
+% Do not clear the workspace: motor/controller parameters may already exist.
 
 %% PARAMETERS YOU CAN CHANGE
+
+clc;
+close all;
+clearvars;
+
+missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below
 useTimedHeadingWaits = true; % true: timed stops/heading steps; false: old smooth planner
-T_wait_heading = 0.60;      % [s] FIXED wait at EACH join; not scaled by slowFactor
+T_wait_heading = 0.3;      % [s] FIXED wait at EACH join; not scaled by slowFactor
 vCircleMax = 0.50;          % [m/s] circle speed cap BEFORE division by slowFactor
 lineTolerance = 0.05;       % [m] nominal maximum line deviation: 0.02 or 0.05
-mu = 0.35;                 % [-] change for the floor: e.g. 0.30 or 0.40
+mu = 0.40;                 % [-] change for the floor: e.g. 0.30 or 0.40
 g = 9.81;                  % [m/s^2]
 aWheelMax = mu*g;          % [m/s^2] limit on EACH wheel, acceleration/braking
 vWheelMax = Inf;           % [m/s] no wheel speed restriction for now
@@ -44,11 +48,12 @@ nJoinCandidates = 15;      % candidates PER join (entry/exit searched separately
 ds_search = 0.010;         % [m] coarse path grid used during join search
 ds_final = 0.002;          % [m] final grid; automatically refined if needed
 makePlots = true;
-slowFactor = 1.3;          % >=1: slows movement; in timed-wait mode, waits stay exactly T_wait_heading
+slowFactor = 1.5;          % >=1: slows movement; in timed-wait mode, waits stay exactly T_wait_heading
 
 %% CHECK SETTINGS AND DEFINE THE MARKED ROUTE
 assert(lineTolerance > 0, 'lineTolerance must be positive.');
-assert(T_wait_heading > 0 && isfinite(T_wait_heading));
+assert(isscalar(T_wait_heading) && isfinite(T_wait_heading) && T_wait_heading > 0, ...
+    'T_wait_heading must be a positive finite scalar.');
 assert(vCircleMax > 0);
 assert(mu > 0 && isfinite(mu), 'mu must be finite and positive.');
 assert(aWheelMax > 0 && isfinite(aWheelMax), 'aWheelMax must be finite and positive.');
@@ -372,6 +377,24 @@ if makePlots
 end
 
 end % useTimedHeadingWaits
+
+%% SIMULATION DURATION -- preserve the existing inputs and sim(model,Tsim) call
+% Both waits are already included in t_stop and in the generated references.
+% Always expose the complete duration using the original variable name Tsim.
+Tsim = t_ref(end);
+mission.Tsim = Tsim;
+mission.t_stop = t_stop;
+assert(abs(Tsim-(t_stop+t_hold))<1e-9, 'Simulation end time is inconsistent.');
+assert(all(diff(t_ref)>0), 'Reference time must be strictly increasing.');
+assert(abs(velocity_ref(end))<1e-10, 'Mission must finish with zero speed reference.');
+
+% Update the model's Run-button stop time too. Existing sim(model,Tsim)
+% uses the same calculated Tsim; no new simulation input object is needed.
+load_system(missionModel);
+set_param(missionModel,'StopTime',sprintf('%.17g',Tsim));
+fprintf('Complete mission duration: Tsim = %.6f s\n',Tsim);
+% Existing controller code remains: discrete_true = 1; out = sim(model,Tsim);
+% A later explicit assignment such as Tsim=12 would override this duration.
 
 %% LOCAL FUNCTIONS -- normally leave these unchanged
 function [P,D,K] = markedRoute(s,G)

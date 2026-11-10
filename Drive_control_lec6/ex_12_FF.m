@@ -1,6 +1,13 @@
 
 %% Exercise 1b - Velocity and heading control
 
+% I need to tune mu so that the wheels do not slip; then slowFactor so that
+% the inputs do not saturate; and then change the mission so that it follows
+% the correct one by changing the reference (??...)
+
+% Remember that if it tumbles doing the semi circle, just reduce the limit
+% on the lateral (centripetal acceleration)
+
 %% Motor parameters
 
 L  = 3.57e-3;        % H
@@ -25,31 +32,31 @@ Ts = 0.008;
 
 %% Reference - Square mission
 
-Tsim = 12;
-
-t_ref = (0:0.01:Tsim)';
-
-velocity_ref = zeros(size(t_ref));
-heading_ref = zeros(size(t_ref));
-
-v = 0.75;
-T_forward = 0.75/v;
-t_start = 0.5;
-
-t_end = t_start + 5*T_forward;
-
-velocity_ref(t_ref >= t_start & t_ref < t_end) = v;
-
-for k = 1:4
-
-    t_turn = t_start + k*T_forward;
-
-    heading_ref(t_ref >= t_turn) = k*pi/2;
-
-end
-
-%v_input = [t_ref velocity_ref];
-%w_input = [t_ref heading_ref];
+% Tsim = 12;
+% 
+% t_ref = (0:0.01:Tsim)';
+% 
+% velocity_ref = zeros(size(t_ref));
+% heading_ref = zeros(size(t_ref));
+% 
+% v = 0.75;
+% T_forward = 0.75/v;
+% t_start = 0.5;
+% 
+% t_end = t_start + 5*T_forward;
+% 
+% velocity_ref(t_ref >= t_start & t_ref < t_end) = v;
+% 
+% for k = 1:4
+% 
+%     t_turn = t_start + k*T_forward;
+% 
+%     heading_ref(t_ref >= t_turn) = k*pi/2;
+% 
+% end
+% 
+% v_input = [t_ref velocity_ref];
+% w_input = [t_ref heading_ref];
 
 %% Wheel Speed Controller
 
@@ -60,15 +67,15 @@ Ki = Kp/tau_I;
 %% Turn Rate Controller
 
 Kp_tr = 1;
-tau_I_tr = 0.2;
+tau_I_tr = 0.22;
 Ki_tr = Kp_tr/tau_I_tr;
 
 %% Acceleration Controller
 
 g = 9.81;
-miu = 0.6; % match with the leonora_fast_mission but test with smaller values (like 0.4 or even 0.3) and then test on the floor
-aup = miu*g;
-adown = -miu*g;
+mu = 0.4; % match with the leonora_fast_mission but test with smaller values (like 0.4 or even 0.3) and then test on the floor
+aup = mu*g;
+adown = -mu*g;
 Kp_acc  = 25;
 
 %% Model Linearization Analysis
@@ -80,10 +87,63 @@ Kph = 1;
 num_ctrl = 1;
 den_ctrl = 1;
 
-model = 'motor_model_23b_lec9_TR';
+tau_I_head = 1e6;  % Nearly disables integral action during initial analysis
+
+model = 'motor_model_23b_lec9_TR_FF';
 
 load_system(model);
 open_system(model);
+
+%% Wheel Speed Controller - Closed-loop Bandwidth
+
+wheelPath = [model '/Robot model/Left motor + vel. control'];
+
+% Inject the wheel-speed reference, disconnecting its upstream command.
+ios_wheel(1) = linio([wheelPath '/In1'],1,'openinput');
+
+% Actual left-wheel speed [m/s].
+% Keep the wheel PI feedback CLOSED.
+ios_wheel(2) = linio([wheelPath '/Gain6'],1,'output');
+
+% Disconnect the outer turn-rate command path.
+ios_wheel(3) = linio([model '/TurnRate_Controller'],1,'loopbreak');
+
+opt_wheel = linearizeOptions;
+opt_wheel.SampleTime = 0;
+
+sys_wheel = linearize(model,ios_wheel,0,opt_wheel);
+
+Twheel = minreal(tf(sys_wheel));
+
+if Twheel.Ts ~= 0
+    error('Wheel-speed linearization is not continuous-time.')
+end
+
+if ~isstable(Twheel)
+    error('Wheel-speed closed loop is unstable.')
+end
+
+BW_wheel = bandwidth(Twheel);
+info_wheel = stepinfo(Twheel);
+
+fprintf('\n--- Wheel Speed Closed Loop ---\n');
+disp(Twheel)
+
+fprintf('DC gain = %.3f\n',dcgain(Twheel));
+fprintf('Bandwidth = %.3f rad/s\n',BW_wheel);
+fprintf('Rise time = %.3f s\n',info_wheel.RiseTime);
+fprintf('Settling time = %.3f s\n',info_wheel.SettlingTime);
+fprintf('Overshoot = %.2f %%\n',info_wheel.Overshoot);
+
+figure
+bode(Twheel)
+grid on
+title('Wheel Speed - Closed-loop Frequency Response')
+
+figure
+step(Twheel)
+grid on
+title('Wheel Speed - Closed-loop Step Response')
 
 %% Turn Rate Controller - Closed-loop bandwidth
 
@@ -166,7 +226,7 @@ margin(Gheading)
 grid on
 title('Heading Plant - Bode Diagram')
 
-%% Heading Phase-Lead Controller Design
+%% Heading Phase-Lead Controller Design - I will have to include integral control to compare it to the feedforward approach
 
 PM_desired = 72;
 PM_safety = 0;
@@ -226,8 +286,8 @@ end
 
 %% Manual Controller Tuning
 
-Kph = 4.1; % tune not to have so much overshoot
-alpha = min(1,alpha*1.6); 
+Kph = 3.7;
+alpha = min(1,alpha*1.3); 
 Tlead = Tlead*1; 
 
 num_ctrl = [Tlead 1];
@@ -238,9 +298,42 @@ Clead = tf(num_ctrl,den_ctrl);
 Lheading = Kph*Clead*Gheading;
 Tclosed = feedback(Lheading,1);
 
+%% Heading Integral Action
+
+% Phase-lead controller, matching the heading lead block
+num_ctrl = [Tlead 1];
+den_ctrl = [alpha*Tlead 1];
+
+Clead = tf(num_ctrl,den_ctrl);
+
+% Crossover before adding integral action
+Lbase = Kph*Clead*Gheading;
+[~,~,~,wc_head] = margin(Lbase);
+
+% Starting choice for integral time
+integralSeparation = 5;
+tau_I_head = integralSeparation/wc_head;
+
+% Match the separate gain + integrator + sum in Simulink
+s = tf('s');
+Cint = 1 + 1/(tau_I_head*s);
+
+Lheading = Kph*Clead*Cint*Gheading;
+Tclosed = feedback(Lheading,1);
+
+fprintf('Heading integral time = %.3f s\n',tau_I_head);
+
 %% Heading Controller Performance
 
 BW_actual = bandwidth(Tclosed);
+
+fprintf('\n--- Cascade Bandwidths ---\n');
+fprintf('Wheel speed = %.3f rad/s\n',BW_wheel);
+fprintf('Turn rate   = %.3f rad/s\n',BW_tr);
+fprintf('Heading     = %.3f rad/s\n',BW_actual);
+
+fprintf('Wheel / turn-rate ratio = %.2f\n',BW_wheel/BW_tr);
+fprintf('Turn-rate / heading ratio = %.2f\n',BW_tr/BW_actual);
 
 [GM,PM,Wcg,Wcp] = margin(Lheading);
 
@@ -297,7 +390,7 @@ fprintf('Overshoot = %.2f %%\n',info.Overshoot);
 
 discrete_true = 1;
 
-out = sim(model,Tsim);
+out = sim(model,t_ref(end));
 
 %% Exercise 1b Plot
 
@@ -383,18 +476,98 @@ figure
 
 plot(x,y,'b','LineWidth',1.5)
 hold on
-plot(0,0,'go','MarkerFaceColor','g')
+plot(x_ref,y_ref,'k--','LineWidth',1.5)
+
+plot(x(1),y(1),'go','MarkerFaceColor','g')
 plot(x(end),y(end),'ro','MarkerFaceColor','r')
+plot(x_ref(end),y_ref(end),'ks','MarkerFaceColor','k')
 
 grid on
 axis equal
 xlabel('X (m)')
 ylabel('Y (m)')
 
-legend('Robot trajectory','Initial position','Final position', ...
-       'Location','best')
+legend('Robot trajectory','Desired trajectory', ...
+       'Initial position','Actual final position', ...
+       'Desired final position','Location','best')
 
-title('Robot Trajectory in the XY Plane')
+title('Actual and Desired Trajectories in the XY Plane')
+
+%% Trajectory Error Metrics
+
+% Desired path as a polyline.
+% Remove repeated points caused by stationary waiting periods.
+desiredPath = [x_ref(:), y_ref(:)];
+
+keep = [true; hypot(diff(desiredPath(:,1)), ...
+                    diff(desiredPath(:,2))) > 1e-12];
+
+desiredPath = desiredPath(keep,:);
+
+assert(size(desiredPath,1) >= 2, ...
+       'Desired trajectory needs at least two distinct points.');
+
+% Desired path segments
+A = desiredPath(1:end-1,:);
+AB = diff(desiredPath,1,1);
+segmentLengthSquared = sum(AB.^2,2);
+
+actualPath = [x(:), y(:)];
+pathDeviation = zeros(size(actualPath,1),1);
+
+% Find the nearest point on any desired-path segment
+for i = 1:size(actualPath,1)
+
+    AP = actualPath(i,:) - A;
+
+    projection = sum(AP.*AB,2)./segmentLengthSquared;
+    projection = max(0,min(1,projection));
+
+    nearestPoints = A + projection.*AB;
+
+    distances = hypot(actualPath(i,1)-nearestPoints(:,1), ...
+                      actualPath(i,2)-nearestPoints(:,2));
+
+    pathDeviation(i) = min(distances);
+end
+
+% Maximum geometric deviation [m]
+[maxDeviation, worstIndex] = max(pathDeviation);
+
+% Accumulated geometric deviation over time [m*s]
+accumulatedDeviation = trapz(t(:),pathDeviation);
+
+% Actual and desired total travelled distances [m]
+actualDistance = sum(hypot(diff(x(:)),diff(y(:))));
+desiredDistance = sum(sqrt(segmentLengthSquared));
+
+% Positive = travelled further than the desired path
+distanceOffset = actualDistance-desiredDistance;
+
+% Final position error [m]
+finalPositionError = hypot(x(end)-x_ref(end), ...
+                           y(end)-y_ref(end));
+
+fprintf('\n--- Trajectory Performance ---\n');
+fprintf('Maximum path deviation: %.2f cm at t = %.3f s\n', ...
+        100*maxDeviation,t(worstIndex));
+fprintf('Accumulated path deviation: %.4f m*s\n', ...
+        accumulatedDeviation);
+fprintf('Actual travelled distance: %.4f m\n',actualDistance);
+fprintf('Desired path length: %.4f m\n',desiredDistance);
+fprintf('Travelled-distance offset: %+.2f cm\n',100*distanceOffset);
+fprintf('Final position error: %.2f cm\n',100*finalPositionError);
+
+figure
+plot(t,100*pathDeviation,'LineWidth',1.5)
+hold on
+plot(t(worstIndex),100*maxDeviation,'ro','MarkerFaceColor','r')
+
+grid on
+xlabel('Time [s]')
+ylabel('Distance to desired path [cm]')
+title('Geometric Trajectory Deviation')
+legend('Path deviation','Maximum deviation','Location','best')
 
 %% Acceleration Plots
 
