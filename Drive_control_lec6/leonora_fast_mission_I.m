@@ -21,7 +21,7 @@ clc;
 close all;
 clearvars;
 
-missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below
+missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below; don't mind this model name here, it is useless, just tries to change simtime in simulink
 useTimedHeadingWaits = true; % true: timed stops/heading steps; false: old smooth planner
 T_wait_heading = 0.7;      % [s] FIXED wait at EACH join; not scaled by slowFactor
 vCircleMax = 0.5;          % [m/s] circle speed cap BEFORE division by slowFactor

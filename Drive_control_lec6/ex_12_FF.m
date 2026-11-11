@@ -73,7 +73,7 @@ Ki_tr = Kp_tr/tau_I_tr;
 %% Acceleration Controller
 
 g = 9.81;
-mu = 0.4; % match with the leonora_fast_mission but test with smaller values (like 0.4 or even 0.3) and then test on the floor
+mu = 0.2; % match with the leonora_fast_mission but test with smaller values (like 0.4 or even 0.3) and then test on the floor
 aup = mu*g;
 adown = -mu*g;
 Kp_acc  = 25;
@@ -286,9 +286,14 @@ end
 
 %% Manual Controller Tuning
 
-Kph = 3.7;
-alpha = min(1,alpha*1.3); 
-Tlead = Tlead*1; 
+% % For the nonrealistic approach
+% Kph = 3.7; 
+% alpha = min(1,alpha*1.3); 
+% Tlead = Tlead*1; 
+
+Kph = 2.07;
+alpha = 0.9421;
+Tlead = 0.2052;
 
 num_ctrl = [Tlead 1];
 den_ctrl = [alpha*Tlead 1];

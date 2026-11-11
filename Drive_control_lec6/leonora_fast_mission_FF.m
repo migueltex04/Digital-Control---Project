@@ -23,10 +23,10 @@ clearvars;
 
 missionModel = 'motor_model_23b_lec9'; % existing model; stop time is updated below
 useTimedHeadingWaits = true; % true: timed stops/heading steps; false: old smooth planner
-T_wait_heading = 0.3;      % [s] FIXED wait at EACH join; not scaled by slowFactor
-vCircleMax = Inf;          % [m/s] circle speed cap BEFORE division by slowFactor
+T_wait_heading = 0.3;       % [s] FIXED wait at EACH join; not scaled by slowFactor
+acc_centrip_max = 2.2;      % [m/s^2] Tested on the classroom floor   
 lineTolerance = 0.05;       % [m] nominal maximum line deviation: 0.02 or 0.05
-mu = 0.40;                 % [-] change for the floor: e.g. 0.30 or 0.40
+mu = 0.20;                 % [-] change for the floor: e.g. 0.30 or 0.40
 g = 9.81;                  % [m/s^2]
 aWheelMax = mu*g;          % [m/s^2] limit on EACH wheel, acceleration/braking
 vWheelMax = Inf;           % [m/s] no wheel speed restriction for now
@@ -35,6 +35,7 @@ B = 0.147;                 % [m] wheel spacing
 
 % Geometry assumed from the slide. Measure from the ACTUAL mission start/stop.
 circleRadius = 0.50;       % [m] 1 m circle diameter
+vCircleMax = sqrt(acc_centrip_max*circleRadius);          % [m/s] circle speed cap BEFORE division by slowFactor
 straightSeparation = 0.30; % [m] distance between straight centre lines
 entryLength = 1.00;        % [m] start to circle join; check timing mark position
 exitLength = 1.50;         % [m] circle join to stop; check stop mark position
@@ -48,7 +49,7 @@ nJoinCandidates = 15;      % candidates PER join (entry/exit searched separately
 ds_search = 0.010;         % [m] coarse path grid used during join search
 ds_final = 0.002;          % [m] final grid; automatically refined if needed
 makePlots = true;
-slowFactor = 1.5;          % >=1: slows movement; in timed-wait mode, waits stay exactly T_wait_heading
+slowFactor = 1.0;          % >=1: slows movement; in timed-wait mode, waits stay exactly T_wait_heading
 
 %% CHECK SETTINGS AND DEFINE THE MARKED ROUTE
 assert(lineTolerance > 0, 'lineTolerance must be positive.');
@@ -142,8 +143,8 @@ if useTimedHeadingWaits
     % Ramp from the velocity at 4.5 s to zero at 4.8 s - This values need
     % to be tuned if Leonora tumbles in the circle because of the
     % centripetal acceleration and a therefore lower vCircleMax
-    t_ramp_start = 4.5;
-    t_ramp_end   = 4.8;
+    t_ramp_start = 4.85;
+    t_ramp_end   = 5.15;
 
     v_ramp_start = interp1(t_ref, velocity_ref, t_ramp_start, 'linear');
 

@@ -9,8 +9,13 @@ then slowFactor so that the inputs do not saturate;
 and then change the mission so that it follows the correct one by changing the reference (maybe not!...)
 
 
-O que é preciso fazer 11/11:
+O que é preciso fazer 16/11:
 
-Apertar a roda o mais próximo possível da distancia B = 14.7 cm.
+Testar se a approach de 1.5m com travagem máxima escolhida não é muito imprevisível, se for vale mais optarmos pela opção anterior mais simples;
+Testar a missão total com todos os métodos de controlo e escolher o melhor (pode ser preciso algum tune do TR controller ou do heading integral, mas pouco... o mais provável é tune da trajetória, como por exemplo provavelmente tirar ou diminuir o tempo de espera ou a leonora nem sequer tem de parar completamente para virar, pode apenas desacelerar bastante);
+Verificar se é preciso por a travagem antecipada no circulo porque a Leonora costuma andar demais, se for, voltar a pedir ao chat.
 
-Com o código cpp que já existe: estimar o máximo de mu que o chão da sala aguenta; estimar o máximo de aceleração centrípeta que a Leonora aguenta (para saber a velocidade máxima a que podemos fazer o círculo de 0.5m de raio) (acho que dá para percebermos com o teste do quadrado, ou então mudamos para um círculo muito simples, já agora de 0.5m de raio também).
+
+O que é preciso fazer 18/11:
+
+Perguntar ao prof se podemos usar feedforward do turnrate no cascaded controller de heading+turnrate (já que estamos a desenhar a missão, também podemos desenhar o input de turnrate, não só de velocidade e heading)
