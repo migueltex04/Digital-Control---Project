@@ -12,7 +12,8 @@ and then change the mission so that it follows the correct one by changing the r
 O que é preciso fazer 16/11:
 
 Testar se a approach de 1.5m com travagem máxima escolhida não é muito imprevisível, se for vale mais optarmos pela opção anterior mais simples;
-Testar a missão total com todos os métodos de controlo e escolher o melhor (pode ser preciso algum tune do TR controller ou do heading integral, mas pouco... o mais provável é tune da trajetória, como por exemplo provavelmente tirar ou diminuir o tempo de espera ou a leonora nem sequer tem de parar completamente para virar, pode apenas desacelerar bastante);
+Testar o CircleGripTest com as várias arquiteturas de controlo; testar também com diferentes valores de linha 153 para ver qual o que melhor segue o círculo;
+Testar a missão total com todos os métodos de controlo e escolher o melhor (pode ser preciso algum tune do TR controller ou do heading integral, mas pouco... o mais provável é tune da trajetória, como por exemplo dar tune das linhas 1161, 1379 - 1384);
 Verificar se é preciso por a travagem antecipada no circulo porque a Leonora costuma andar demais, se for, voltar a pedir ao chat.
 
 

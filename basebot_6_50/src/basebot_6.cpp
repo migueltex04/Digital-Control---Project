@@ -81,7 +81,7 @@ const float Ki = Kp / taui;
 
 const float voltageMax = 9.0f;
 
-// Turnrate PI (enabled/disabled by useTurnrateCascade)
+// Turnrate PI 
 
 const float KpTurn = 0.0443322593f;
 const float tauiTurn = 0.00778527218f;
@@ -150,7 +150,7 @@ const float gyroSign = 1.0f;
 // ============================================================
 const float fullStartHold = 0.5f;
 const float fullHeadingWait = 0.3f;
-const float fullCircleWheelAccel = 0.20f * 9.81f; // MATLAB floor parameter
+const float fullCircleWheelAccel = 0.15f * 9.81f; // MATLAB floor parameter (- it was 0.2 but tune this value to the floor with the circle grip test and ensure it follows a trajectory)
 const float fullEntryCorrectionDeg = 0.0f;       // current standalone 1 m test
 const float fullExitCorrectionDeg = 0.0f;        // current standalone 1.5 m test
 
@@ -1155,8 +1155,10 @@ void sequenceHeadingTest()
 
 
 // ============================================================
-// 20. CONTROL UPDATE
+// 20. FINAL MISSIONS
 // ============================================================
+
+const float circleHeadingLeadTime = 0.15f; // seconds - to compensate not following the circle (smth between 0.1 and 0.3)
 
 float fullStraightVelocity(float t, const FullStraightProfile &p)
 {
@@ -1241,13 +1243,41 @@ void sequenceFullPath()
     else if (t < fullCircleEnd)
     {
         state = 43;
+
+        const float local = t-fullCircleStart;
+
         float sCircle, vCircle;
-        fullCircleReference(t-fullCircleStart,sCircle,vCircle);
-        desiredHeading = fullCircleHeadingStart+sCircle/circleRadius;
-        trajectoryTurnrateRef = vCircle/circleRadius;
+        fullCircleReference(local, sCircle, vCircle);
+
+        float aCircle = 0.0f;
+
+        if (local < fullCircleTa)
+        {
+            aCircle = fullCircleAccel;
+        }
+        else if (local >= fullCircleTa+fullCircleTc)
+        {
+            aCircle = -fullCircleAccel;
+        }
+
+        const float nominalHeading =
+            fullCircleHeadingStart+sCircle/circleRadius;
+
+        const float nominalTurnrate =
+            vCircle/circleRadius;
+
+        // Command the heading ahead of the desired physical heading.
+        desiredHeading =
+            nominalHeading
+            + circleHeadingLeadTime*nominalTurnrate;
+
+        // Derivative of that advanced heading.
+        // Used by your existing optional feedforward and logging.
+        trajectoryTurnrateRef =
+            nominalTurnrate
+            + circleHeadingLeadTime*aCircle/circleRadius;
+
         desiredValue = vCircle;
-        // Nominal circle speed: no early-braking override.
-        // Heading derivative and forward speed satisfy omega_ref = v_ref/R.
     }
     else if (t < fullExitStart)
     {
@@ -1270,12 +1300,366 @@ void sequenceFullPath()
 }
 
 // ============================================================
+// MOVING FULL PATH — TIME BASED
+// ============================================================
+
+float fullStraightVelocityMoving(
+    float t,
+    const FullStraightProfile &p,
+    float v0 = 0.0f,
+    float v1 = 0.0f)
+{
+    if (t < 0.0f) return v0;
+    if (t >= p.ta+p.tb) return v1;
+    if (t < p.ta) return v0+p.acceleration*t;
+
+    const float u = (t-p.ta)/p.tb;
+
+    return v1 + (p.peak-v1)
+        * powf(fmaxf(0.0f, 1.0f-u), p.exponent);
+}
+
+
+void fullCircleReferenceMoving(
+    float t,
+    float &distance,
+    float &velocity,
+    float length = circleLength,
+    float joinSpeed = 0.0f)
+{
+    const float a = fullCircleAccel;
+
+    const float peak = fminf(
+        circleSpeed,
+        sqrtf(joinSpeed*joinSpeed+a*length)
+    );
+
+    const float ta = (peak-joinSpeed)/a;
+
+    const float tc = fmaxf(
+        0.0f,
+        (length-(peak*peak-joinSpeed*joinSpeed)/a)/peak
+    );
+
+    const float duration = 2.0f*ta+tc;
+
+    distance = 0.0f;
+    velocity = joinSpeed;
+
+    if (t <= 0.0f) return;
+
+    if (t >= duration)
+    {
+        distance = length;
+        return;
+    }
+
+    if (t < ta)
+    {
+        distance = joinSpeed*t+0.5f*a*t*t;
+        velocity = joinSpeed+a*t;
+    }
+    else if (t < ta+tc)
+    {
+        distance = 0.5f*(joinSpeed+peak)*ta+peak*(t-ta);
+        velocity = peak;
+    }
+    else
+    {
+        const float remaining = duration-t;
+
+        distance = length
+                 - joinSpeed*remaining
+                 - 0.5f*a*remaining*remaining;
+
+        velocity = joinSpeed+a*remaining;
+    }
+}
+
+const float fullJoinSpeed = 0.50f;
+const float movingCornerCut = 0.20f;
+
+const float movingCircleBackShift = 0.18f; // deslocar 15 cm para -X
+
+const float circleBrakeAdvance = 0.30f; // Start braking 0.30 s earlier than the end of the circle
+
+const float movingEntryLength =
+    1.0f-movingCornerCut-movingCircleBackShift;
+const float movingExitLength = 1.5f-movingCornerCut;
+
+// Same geometry, with fewer intermediate constants.
+const float movingDx = movingCornerCut + sqrtf(
+    circleRadius*circleRadius-0.25f*circleChord*circleChord);
+
+const float movingTurnRadius =
+    (movingDx*movingDx
+     + 0.25f*circleChord*circleChord
+     - circleRadius*circleRadius)
+    / (2.0f*circleRadius-circleChord);
+
+const float movingTurnAngle =
+    atan2f(movingDx, movingTurnRadius+0.5f*circleChord);
+
+const float movingTurnDuration =
+    movingTurnRadius*movingTurnAngle/fullJoinSpeed;
+
+const float movingArcLength =
+    circleRadius*(PI+2.0f*movingTurnAngle);
+
+
+// ============================================================
+// PROFILE PARAMETERS
+// ============================================================
+
+FullStraightProfile makeMovingStraight(
+    float length,
+    float v0,
+    float v1,
+    const FullStraightProfile &original)
+{
+    const float a = original.acceleration;
+    const float n = original.exponent;
+    const float b = fminf(accMax, n*original.peak/original.tb);
+
+    const float A = 1.0f/(2.0f*a)+n/(b*(n+1.0f));
+    const float B = v1/a+n*v1/b;
+    const float C = (v1*v1-v0*v0)/(2.0f*a)-length;
+
+    const float peak =
+        v1-2.0f*C/(B+sqrtf(B*B-4.0f*A*C));
+
+    return {
+        a,
+        (peak-v0)/a,
+        n*(peak-v1)/b,
+        peak,
+        n
+    };
+}
+
+const FullStraightProfile movingEntry =
+    makeMovingStraight(
+        movingEntryLength, 0.0f, fullJoinSpeed, fullEntry);
+
+const FullStraightProfile movingExit =
+    makeMovingStraight(
+        movingExitLength, fullJoinSpeed, 0.0f, fullExit);
+
+const float movingCirclePeak = fminf(
+    circleSpeed,
+    sqrtf(fullJoinSpeed*fullJoinSpeed
+          + fullCircleAccel*movingArcLength)
+);
+
+const float movingCircleTa =
+    (movingCirclePeak-fullJoinSpeed)/fullCircleAccel;
+
+const float movingCircleTc = fmaxf(
+    0.0f,
+    (movingArcLength
+     - (movingCirclePeak*movingCirclePeak
+        - fullJoinSpeed*fullJoinSpeed)/fullCircleAccel)
+    / movingCirclePeak
+);
+
+const float movingCircleDuration =
+    2.0f*movingCircleTa+movingCircleTc;
+
+// Fade the heading advance to zero at both circle joins.
+// At cruise, retain the full circleHeadingLeadTime*turnrate advance.
+const float movingLeadScale =
+    (movingCirclePeak > fullJoinSpeed)
+    ? circleHeadingLeadTime*movingCirclePeak
+      / (movingCirclePeak-fullJoinSpeed)
+    : 0.0f;
+
+
+// ============================================================
+// TIME BOUNDARIES
+// ============================================================
+
+const float movingEntryStart = fullStartHold;
+
+const float movingEntryEnd =
+    movingEntryStart+movingEntry.ta+movingEntry.tb;
+
+const float movingCircleStart =
+    movingEntryEnd+movingTurnDuration;
+
+const float movingCircleEnd =
+    movingCircleStart+movingCircleDuration;
+
+const float movingExitStart =
+    movingCircleEnd+movingTurnDuration;
+
+const float movingExitEnd =
+    movingExitStart+movingExit.ta+movingExit.tb;
+
+
+// ============================================================
+// MISSION
+// ============================================================
+
+void sequenceFullPathMoving()
+{
+    if (state == 0)
+    {
+        if (startRequested())
+        {
+            start();
+            trajectoryTurnrateRef = 0.0f;
+            state = 40;
+        }
+        return;
+    }
+
+    trajectoryTurnrateRef = 0.0f;
+
+    if (state == 2)
+    {
+        if (time_sec >= endTime) finished();
+        return;
+    }
+
+    if (state == 47)
+    {
+        waitForWheelsToStop();
+        return;
+    }
+
+    const float t = time_sec;
+    desiredValue = 0.0f;
+
+    if (t < movingEntryStart)
+    {
+        state = 40;
+        desiredHeading = 0.0f;
+    }
+    else if (t < movingEntryEnd)
+    {
+        state = 41;
+
+        desiredValue = fullStraightVelocityMoving(
+            t-movingEntryStart,
+            movingEntry,
+            0.0f,
+            fullJoinSpeed
+        );
+
+        desiredHeading = 0.0f;
+    }
+    else if (t < movingCircleStart)
+    {
+        state = 42;
+
+        desiredValue = fullJoinSpeed;
+
+        trajectoryTurnrateRef =
+            -fullJoinSpeed/movingTurnRadius;
+
+        desiredHeading =
+            trajectoryTurnrateRef*(t-movingEntryEnd);
+    }
+    else if (t < movingCircleEnd)
+    {
+        state = 43;
+
+        const float local = t-movingCircleStart;
+
+        float s, v;
+
+        fullCircleReferenceMoving(
+            local, s, v,
+            movingArcLength, fullJoinSpeed
+        );
+
+        float a = 0.0f;
+
+        if (local < movingCircleTa)
+            a = fullCircleAccel;
+        else if (local >= movingCircleTa+movingCircleTc)
+            a = -fullCircleAccel;
+
+        desiredValue = v;
+
+        desiredHeading =
+            -movingTurnAngle+s/circleRadius
+            + movingLeadScale*(v-fullJoinSpeed)/circleRadius;
+
+        trajectoryTurnrateRef =
+            (v+movingLeadScale*a)/circleRadius;
+
+        // Begin braking before the normal circle deceleration.
+        const float brakeStart = fmaxf(
+            0.0f,
+            movingCircleTa+movingCircleTc-circleBrakeAdvance
+        );
+
+        if (local >= brakeStart)
+        {
+            float unusedDistance, brakeSpeed;
+
+            // Nominal speed at the instant early braking begins.
+            fullCircleReferenceMoving(
+                brakeStart,
+                unusedDistance,
+                brakeSpeed,
+                movingArcLength,
+                fullJoinSpeed
+            );
+
+            // Override forward speed only.
+            desiredValue = fminf(
+                v,
+                fmaxf(
+                    0.0f,
+                    brakeSpeed-fullCircleAccel*(local-brakeStart)
+                )
+            );
+        }
+    }
+    else if (t < movingExitStart)
+    {
+        state = 44;
+
+        desiredValue = fullJoinSpeed;
+
+        trajectoryTurnrateRef =
+            -fullJoinSpeed/movingTurnRadius;
+
+        desiredHeading =
+            PI+movingTurnAngle
+            + trajectoryTurnrateRef*(t-movingCircleEnd);
+    }
+    else if (t < movingExitEnd)
+    {
+        state = 45;
+
+        desiredValue = fullStraightVelocityMoving(
+            t-movingExitStart,
+            movingExit,
+            fullJoinSpeed,
+            0.0f
+        );
+
+        desiredHeading = PI;
+    }
+    else
+    {
+        state = 47;
+        desiredHeading = PI;
+        endTime = t+2.0f;
+    }
+}
+
+
+// ============================================================
 // MISSION SELECTION -- change ONLY the function name below
 // Options: sequenceHeadingTest, sequenceTest, sequenceCircleGripTest,
 //          sequenceDistance100Test, sequenceDistance150Test, sequenceFullPath
 // Full path selected; all standalone missions remain available.
 // ============================================================
-const auto selectedMission = sequenceFullPath;
+const auto selectedMission = sequenceFullPathMoving; //sequenceFullPath or sequenceFullPathMoving
 
 const char *selectedMissionName()
 {
