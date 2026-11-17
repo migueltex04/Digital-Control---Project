@@ -91,7 +91,7 @@ const float turnrateMax = 4.0f;
 
 // Heading phase-lead
 
-const float KphHeading = 2.6f; //(era 2.07)
+const float KphHeading = 2.7f; //(era 2.07)
 const float TleadHeading = 0.2052f;
 const float alphaHeading = 0.9421f;
 
