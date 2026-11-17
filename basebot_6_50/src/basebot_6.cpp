@@ -41,7 +41,7 @@
 
 // Circle grip test parameters
 // Change this parameter between runs: 1.0, 2.0, 3.0, ...
-const float aCentTest = 2.2f;       // Requested centripetal acceleration [m/s^2]
+const float aCentTest = 1.7f;       // Requested centripetal acceleration [m/s^2]
 
 const float circleRadius = 0.50f;   // Radius of the track centreline [m]
 const float circleChord = 0.30f;    // Distance between arc endpoints [m]
@@ -91,7 +91,7 @@ const float turnrateMax = 4.0f;
 
 // Heading phase-lead
 
-const float KphHeading = 2.07f;
+const float KphHeading = 2.6f; //(era 2.07)
 const float TleadHeading = 0.2052f;
 const float alphaHeading = 0.9421f;
 
@@ -101,7 +101,7 @@ const float alphaHeading = 0.9421f;
 // useTurnrateCascade independently selects the inner turnrate PI.
 // ============================================================
 const bool useTurnrateCascade = true;
-const bool useTurnrateFeedforward = false;
+const bool useTurnrateFeedforward = true;
 const bool useHeadingIntegral = false;
 
 // PLACEHOLDERS: replace BOTH zeros with your Simulink values BEFORE
@@ -150,7 +150,7 @@ const float gyroSign = 1.0f;
 // ============================================================
 const float fullStartHold = 0.5f;
 const float fullHeadingWait = 0.3f;
-const float fullCircleWheelAccel = 0.15f * 9.81f; // MATLAB floor parameter (- it was 0.2 but tune this value to the floor with the circle grip test and ensure it follows a trajectory)
+const float fullCircleWheelAccel = 0.05f * 9.81f; // MATLAB floor parameter (- it was 0.2 but tune this value to the floor with the circle grip test and ensure it follows a trajectory)
 const float fullEntryCorrectionDeg = 0.0f;       // current standalone 1 m test
 const float fullExitCorrectionDeg = 0.0f;        // current standalone 1.5 m test
 
@@ -1158,7 +1158,7 @@ void sequenceHeadingTest()
 // 20. FINAL MISSIONS
 // ============================================================
 
-const float circleHeadingLeadTime = 0.15f; // seconds - to compensate not following the circle (smth between 0.1 and 0.3)
+const float circleHeadingLeadTime = 0.0f; // seconds - to compensate not following the circle (smth between 0.1 and 0.3)
 
 float fullStraightVelocity(float t, const FullStraightProfile &p)
 {
@@ -1376,10 +1376,10 @@ void fullCircleReferenceMoving(
     }
 }
 
-const float fullJoinSpeed = 0.50f;
-const float movingCornerCut = 0.20f;
+const float fullJoinSpeed = 0.20f;
+const float movingCornerCut = 0.1f;
 
-const float movingCircleBackShift = 0.18f; // deslocar 15 cm para -X
+const float movingCircleBackShift = 0.0f; // deslocar 15 cm para -X
 
 const float circleBrakeAdvance = 0.30f; // Start braking 0.30 s earlier than the end of the circle
 
